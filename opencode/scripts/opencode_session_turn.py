@@ -3,7 +3,6 @@ import argparse
 import json
 import subprocess
 import sys
-import tempfile
 from pathlib import Path
 
 PY = sys.executable
@@ -71,7 +70,7 @@ def build_cadence(payload):
     }
 
 
-def build_turn_result(payload, control=None, origin_session=None, origin_target=None, fallback_text=None, include_payload=False):
+def build_turn_result(payload, control=None, origin_session=None, origin_target=None, include_payload=False):
     fact_skeleton = build_fact_skeleton(payload)
     cadence = build_cadence(payload)
     delivery = {
@@ -86,28 +85,9 @@ def build_turn_result(payload, control=None, origin_session=None, origin_target=
         "cadence": cadence,
         "control": control,
     }
-    if fallback_text is not None:
-        result["fallback"] = {
-            "renderedUpdate": fallback_text or None,
-        }
     if include_payload:
         result["payload"] = payload
     return result
-
-
-def maybe_render_fallback(payload, quiet_when_empty=False):
-    tmp_path = None
-    try:
-        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as tmp:
-            tmp.write(json.dumps(payload, ensure_ascii=False, indent=2))
-            tmp_path = tmp.name
-        render_args = ["--input", tmp_path]
-        if quiet_when_empty:
-            render_args.append("--quiet-when-empty")
-        return run_capture("opencode_render_update.py", render_args).rstrip("\n")
-    finally:
-        if tmp_path:
-            Path(tmp_path).unlink(missing_ok=True)
 
 
 def main() -> None:
@@ -124,8 +104,6 @@ def main() -> None:
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
     p.add_argument("--write", action="store_true")
     p.add_argument("--payload-out")
-    p.add_argument("--update-out")
-    p.add_argument("--quiet-when-empty", action="store_true")
     p.add_argument("--include-payload", action="store_true")
     args = p.parse_args()
 
@@ -151,18 +129,12 @@ def main() -> None:
     if args.payload_out:
         Path(args.payload_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
-    fallback_text = None
-    if args.update_out:
-        fallback_text = maybe_render_fallback(payload, quiet_when_empty=args.quiet_when_empty)
-        Path(args.update_out).write_text(fallback_text + ("\n" if fallback_text else ""))
-
     print(json.dumps(
         build_turn_result(
             payload,
             control=control,
             origin_session=args.origin_session,
             origin_target=args.origin_target,
-            fallback_text=fallback_text,
             include_payload=args.include_payload,
         ),
         ensure_ascii=False,

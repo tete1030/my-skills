@@ -71,16 +71,6 @@ Useful fields include:
 - `consecutiveNoChangeCount`
 - `lastVisibleUpdateAt`
 
-## Render fallback
-
-`render-update` remains available, but only as a fallback/debug helper.
-
-Use it when:
-- debugging the turn result;
-- producing a temporary generic sentence for inspection;
-- maintaining compatibility with older experiments.
-
-Do **not** treat fallback rendered text as the authoritative main-session explanation.
 
 ## Optional debug-only fields
 

@@ -42,6 +42,7 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(result["cadence"]["decision"], "visible_update")
         self.assertFalse(result["cadence"]["noChange"])
         self.assertNotIn("fallback", result)
+        self.assertNotIn("payload", result)
 
     def test_turn_result_keeps_silent_cadence_without_send(self):
         payload = {

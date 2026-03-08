@@ -28,7 +28,6 @@ python3 scripts/opencodectl.py turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <fallback.txt>] \
   [--include-payload]
 ```
 
@@ -53,12 +52,6 @@ Delivery metadata should point back to the original task-initiating session.
 
 Use lower-level commands only when debugging or testing a narrower layer.
 
-## Optional fallback text
-
-`--update-out` is optional and should be treated as a **fallback/debug artifact**.
-
-It exists for compatibility or inspection when you want a generic rendered sentence, but it is not the authoritative happy-path output.
-Use `--include-payload` only for explicit debugging; default turn output should stay compact.
 
 ## Supported commands
 
@@ -112,16 +105,6 @@ python3 scripts/opencodectl.py scenario \
   [--write]
 ```
 
-### Render a fallback/debug update
-
-```bash
-python3 scripts/opencodectl.py render-update \
-  --input <turn-or-cycle-result.json> \
-  [--quiet-when-empty]
-```
-
-Use this when you need a generic sentence for debugging, inspection, or compatibility with older experiments.
-Do **not** treat it as the primary main-session narrative path.
 
 ### Alias for the happy-path turn
 
@@ -135,7 +118,6 @@ python3 scripts/opencodectl.py session-turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <fallback.txt>] \
   [--include-payload]
 ```
 

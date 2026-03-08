@@ -80,13 +80,6 @@ def cmd_scenario(args) -> int:
     return run_json("opencode_scenario.py", command)
 
 
-def cmd_render_update(args) -> int:
-    command = ["--input", args.input]
-    if args.quiet_when_empty:
-        command.append("--quiet-when-empty")
-    if args.include_payload:
-        command.append("--include-payload")
-    return run_json("opencode_render_update.py", command)
 
 
 def cmd_session_turn(args) -> int:
@@ -106,10 +99,6 @@ def cmd_session_turn(args) -> int:
         command.append("--write")
     if args.payload_out:
         command += ["--payload-out", args.payload_out]
-    if args.update_out:
-        command += ["--update-out", args.update_out]
-    if args.quiet_when_empty:
-        command.append("--quiet-when-empty")
     if args.include_payload:
         command.append("--include-payload")
     return run_json("opencode_session_turn.py", command)
@@ -169,10 +158,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--write", action="store_true")
     p_sc.set_defaults(func=cmd_scenario)
 
-    p_ru = sub.add_parser("render-update", help="Render a fallback/debug update from a turn or cycle payload.")
-    p_ru.add_argument("--input", required=True)
-    p_ru.add_argument("--quiet-when-empty", action="store_true")
-    p_ru.set_defaults(func=cmd_render_update)
+
 
     p_turn = sub.add_parser("turn", help="Preferred happy path: run one main-session turn and emit structured facts plus cadence and delivery metadata.")
     p_turn.add_argument("--base-url", required=True)
@@ -187,8 +173,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_turn.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_turn.add_argument("--write", action="store_true")
     p_turn.add_argument("--payload-out")
-    p_turn.add_argument("--update-out")
-    p_turn.add_argument("--quiet-when-empty", action="store_true")
     p_turn.add_argument("--include-payload", action="store_true")
     p_turn.set_defaults(func=cmd_session_turn)
 
@@ -205,8 +189,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_st.add_argument("--write", action="store_true")
     p_st.add_argument("--payload-out")
-    p_st.add_argument("--update-out")
-    p_st.add_argument("--quiet-when-empty", action="store_true")
     p_st.add_argument("--include-payload", action="store_true")
     p_st.set_defaults(func=cmd_session_turn)
 

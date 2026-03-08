@@ -14,7 +14,6 @@ Keep the main session as the primary decision surface and the primary user-visib
 - Prefer `executionMode = main_session_centered` unless a later design revision explicitly changes it.
 - Treat `opencodectl.py turn` as the **happy-path structured turn output**.
 - Let mechanical/script layers emit facts, cadence, and routing metadata; let the main-session agent write the final explanation.
-- Treat `render-update` as fallback/debug, not as the primary narrative path.
 - Keep environment-specific paths, hostnames, credentials, and local lab details **out of the skill package and out of committed docs**.
 
 ## Read order
@@ -54,7 +53,7 @@ Default to the unified entrypoint:
 Treat `opencodectl.py turn` as the **primary happy path** for real operation.
 Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final result envelope.
 When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the current execution context.
-Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`. Use `render-update` only when you explicitly need a fallback/debug sentence, and use raw payload output only in explicit debug flows.
+Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`, and use raw payload output only in explicit debug flows.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -152,7 +151,6 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
 - `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
-- `scripts/opencode_render_update.py` — fallback/debug renderer that turns a turn result or cycle payload into a generic sentence when needed.
 - `scripts/opencode_session_turn.py` — combine remote-cycle output into one higher-level turn result with fact skeleton, cadence, and delivery metadata.
 - `scripts/opencode_explain_turn.py` — summarize why a turn emitted or skipped a visible update and expose the structured turn facts for debugging.
 

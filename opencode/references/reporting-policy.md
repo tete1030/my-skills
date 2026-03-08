@@ -13,7 +13,6 @@ The main-session agent should read the turn result, decide whether to speak, and
 - Preserve delivery routing metadata so explanation goes back to the originating session.
 - Expose cadence/no-change state so the main agent can stay quiet or be brief on purpose.
 - Avoid replaying raw API payloads into chat.
-- Treat `render-update` as fallback/debug only.
 
 ## Happy-path output
 
@@ -48,11 +47,3 @@ Explain that the task appears failed and what inspection or recovery should happ
 ### Completed
 Explain that the task appears complete and summarize the latest meaningful preview if it helps.
 
-## Fallback renderer
-
-Use `render-update` only when you need a generic sentence quickly for:
-- debugging;
-- sanity checks;
-- compatibility with older flows.
-
-If the main-session agent is available, prefer agent-written explanation over renderer-written prose.
