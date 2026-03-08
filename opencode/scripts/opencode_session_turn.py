@@ -38,6 +38,7 @@ def main() -> None:
     p.add_argument("--origin-target")
     p.add_argument("--token")
     p.add_argument("--timeout", type=int, default=20)
+    p.add_argument("--message-limit", type=int, default=10)
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
     p.add_argument("--write", action="store_true")
     p.add_argument("--payload-out")
@@ -50,6 +51,7 @@ def main() -> None:
         "--session-id", args.session_id,
         "--state", args.state,
         "--timeout", str(args.timeout),
+        "--message-limit", str(args.message_limit),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
     if args.control:

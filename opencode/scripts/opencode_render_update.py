@@ -49,7 +49,12 @@ def render(payload):
 
     status = observation.get("status") or after.get("status") or "unknown"
     phase = observation.get("phase") or after.get("phase")
-    preview = latest.get("message.lastTextPreview") or latest.get("textPreview")
+    preview = (
+        snapshot.get("latestAssistantTextPreview")
+        or snapshot.get("latestTextPreview")
+        or latest.get("message.lastTextPreview")
+        or latest.get("textPreview")
+    )
     preview = short(preview)
     no_change = observation.get("noChange")
     count = after.get("consecutiveNoChangeCount")

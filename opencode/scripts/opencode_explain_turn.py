@@ -39,7 +39,7 @@ def main():
         "consecutiveNoChangeCount": after.get("consecutiveNoChangeCount"),
         "lastSeenMessageId": observation.get("lastSeenMessageId") or after.get("lastSeenMessageId"),
         "lastTodoDigest": observation.get("lastTodoDigest") or after.get("lastTodoDigest"),
-        "latestTextPreview": latest.get("message.lastTextPreview"),
+        "latestTextPreview": snapshot.get("latestAssistantTextPreview") or snapshot.get("latestTextPreview") or latest.get("message.lastTextPreview"),
         "updateEmitted": bool(data.get("update")) if isinstance(data, dict) else None,
         "updateText": data.get("update") if isinstance(data, dict) else None,
         "originSession": get(data, "delivery", "originSession"),

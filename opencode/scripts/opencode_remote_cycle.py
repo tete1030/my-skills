@@ -8,12 +8,19 @@ from pathlib import Path
 
 from opencode_api_client import OpenCodeClient
 from opencode_cycle import load_state, write_json, now_iso, append_history, decide, apply_control
-from opencode_snapshot import compact_latest_message
+from opencode_snapshot import build_compact_snapshot
+
+
+ACTIVE_TODO_STATUSES = {"in_progress", "active", "running", "current"}
+PENDING_TODO_STATUSES = {"pending", "todo", "queued", "next", "open"}
+
 
 
 def stable_digest(value) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
 
 def load_json(path: str | None):
     if not path:
@@ -22,21 +29,63 @@ def load_json(path: str | None):
 
 
 
+def todo_pending_state(todo) -> bool:
+    if isinstance(todo, dict):
+        if todo.get("hasPendingWork") is not None:
+            return bool(todo.get("hasPendingWork"))
+        current = todo.get("current")
+        if isinstance(current, dict) and current.get("content"):
+            return True
+        next_item = todo.get("next")
+        if isinstance(next_item, dict) and next_item.get("content"):
+            return True
+        items = todo.get("items")
+        if isinstance(items, list):
+            return any(
+                isinstance(item, dict) and item.get("status") in (ACTIVE_TODO_STATUSES | PENDING_TODO_STATUSES)
+                for item in items
+            )
+    if isinstance(todo, list):
+        return any(
+            isinstance(item, dict) and str(item.get("status") or "").lower() in (ACTIVE_TODO_STATUSES | PENDING_TODO_STATUSES)
+            for item in todo
+        )
+    return False
+
+
+
 def derive_phase(todo, fallback=None):
+    if isinstance(todo, dict):
+        if todo.get("phase"):
+            return todo.get("phase")
+        current = todo.get("current")
+        if isinstance(current, dict) and current.get("content"):
+            return current.get("content")
+        next_item = todo.get("next")
+        if isinstance(next_item, dict) and next_item.get("content"):
+            return next_item.get("content")
+        latest_completed = todo.get("latestCompleted")
+        if isinstance(latest_completed, dict) and latest_completed.get("content"):
+            return latest_completed.get("content")
+        for key in ["title", "name", "current"]:
+            if key in todo and todo.get(key):
+                return todo.get(key)
     if isinstance(todo, list):
         for item in todo:
             if isinstance(item, dict):
                 status = str(item.get("status", "")).lower()
-                if status in {"in_progress", "active", "running", "current", "pending"}:
+                if status in ACTIVE_TODO_STATUSES:
                     return item.get("title") or item.get("content") or fallback
         for item in todo:
             if isinstance(item, dict):
+                status = str(item.get("status", "")).lower()
+                if status in PENDING_TODO_STATUSES:
+                    return item.get("title") or item.get("content") or fallback
+        for item in reversed(todo):
+            if isinstance(item, dict):
                 return item.get("title") or item.get("content") or fallback
-    if isinstance(todo, dict):
-        for key in ["phase", "title", "name", "current"]:
-            if key in todo and todo.get(key):
-                return todo.get(key)
     return fallback
+
 
 
 def non_empty(value) -> bool:
@@ -47,11 +96,13 @@ def non_empty(value) -> bool:
     return True
 
 
+
 def derive_status(snapshot, previous_status="idle"):
     latest = snapshot.get("latestMessage") or {}
     permission = snapshot.get("permission")
     question = snapshot.get("question")
     errors = snapshot.get("errors") or {}
+    todo = snapshot.get("todo")
 
     if non_empty(permission) or non_empty(question):
         return "blocked"
@@ -60,7 +111,25 @@ def derive_status(snapshot, previous_status="idle"):
     if raw_status in {"failed", "error"}:
         return "failed"
 
-    if latest.get("completed") or str(latest.get("finish") or "").lower() == "stop" or str(latest.get("message.stopReason") or "").lower() == "stop":
+    if todo_pending_state(todo):
+        return "running"
+
+    role = str(latest.get("role") or "").lower()
+    finish = str(latest.get("finish") or latest.get("message.stopReason") or "").lower()
+    has_text = bool(latest.get("hasText") or latest.get("message.lastTextPreview"))
+    has_tool_calls = bool(latest.get("hasToolCalls"))
+    tool_statuses = {str(status).lower() for status in (latest.get("toolStatuses") or [])}
+
+    if role == "user":
+        return "running"
+
+    if finish == "stop":
+        return "completed"
+
+    if latest.get("completed") and has_text:
+        return "completed"
+
+    if latest.get("completed") and has_tool_calls and not has_text and (not tool_statuses or tool_statuses <= {"completed", "done", "finished", "succeeded", "success", "ok"}):
         return "completed"
 
     if errors and previous_status not in {"completed", "failed", "blocked", "stalled", "deviated"}:
@@ -69,31 +138,11 @@ def derive_status(snapshot, previous_status="idle"):
     return "running"
 
 
-def build_snapshot(client: OpenCodeClient, session_id: str):
-    errors = {}
 
-    def attempt(name, fn):
-        try:
-            return fn()
-        except Exception as e:
-            errors[name] = str(e)
-            return None
+def build_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10):
+    snapshot, _errors = build_compact_snapshot(client, session_id, message_limit=message_limit)
+    return snapshot
 
-    latest_message = attempt('latest_message', lambda: client.latest_message(session_id))
-    todo = attempt('todo', lambda: client.session_todo(session_id))
-    status = attempt('status', client.session_status)
-    permission = attempt('permission', client.permission)
-    question = attempt('question', client.question)
-
-    return {
-        "sessionId": session_id,
-        "latestMessage": compact_latest_message(latest_message),
-        "todo": todo,
-        "status": status,
-        "permission": permission,
-        "question": question,
-        "errors": errors,
-    }
 
 
 def snapshot_to_observation(snapshot, state):
@@ -126,6 +175,7 @@ def snapshot_to_observation(snapshot, state):
     return observation
 
 
+
 def main():
     p = argparse.ArgumentParser(description="Fetch remote OpenCode state and run one compact main-session decision cycle.")
     p.add_argument("--base-url", required=True)
@@ -134,6 +184,7 @@ def main():
     p.add_argument("--control")
     p.add_argument("--token")
     p.add_argument("--timeout", type=int, default=20)
+    p.add_argument("--message-limit", type=int, default=10)
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
     p.add_argument("--write", action="store_true")
     args = p.parse_args()
@@ -147,7 +198,7 @@ def main():
     after = deepcopy(effective_before)
 
     client = OpenCodeClient(base_url=args.base_url, token=args.token, timeout=args.timeout)
-    snapshot = build_snapshot(client, args.session_id)
+    snapshot = build_snapshot(client, args.session_id, message_limit=args.message_limit)
     observation = snapshot_to_observation(snapshot, effective_before)
     decision = decide(effective_before, observation, no_change_visible_after_min=args.no_change_visible_after_min)
 

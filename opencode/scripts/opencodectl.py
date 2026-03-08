@@ -47,7 +47,7 @@ def cmd_snapshot(args) -> int:
     command = ["--base-url", args.base_url, "--session-id", args.session_id]
     if args.token:
         command += ["--token", args.token]
-    command += ["--timeout", str(args.timeout)]
+    command += ["--timeout", str(args.timeout), "--message-limit", str(args.message_limit)]
     return run_json("opencode_snapshot.py", command)
 
 
@@ -56,6 +56,7 @@ def cmd_remote_cycle(args) -> int:
         "--base-url", args.base_url,
         "--session-id", args.session_id,
         "--state", args.state,
+        "--message-limit", str(args.message_limit),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
     if args.control:
@@ -97,6 +98,7 @@ def cmd_session_turn(args) -> int:
         "--session-id", args.session_id,
         "--state", args.state,
         "--timeout", str(args.timeout),
+        "--message-limit", str(args.message_limit),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
     if args.control:
@@ -149,6 +151,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_snap.add_argument("--session-id", required=True)
     p_snap.add_argument("--token")
     p_snap.add_argument("--timeout", type=int, default=20)
+    p_snap.add_argument("--message-limit", type=int, default=10)
     p_snap.set_defaults(func=cmd_snapshot)
 
     p_rc = sub.add_parser("remote-cycle", help="Fetch remote state and run one decision cycle.")
@@ -160,6 +163,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rc.add_argument("--origin-target")
     p_rc.add_argument("--token")
     p_rc.add_argument("--timeout", type=int, default=20)
+    p_rc.add_argument("--message-limit", type=int, default=10)
     p_rc.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_rc.add_argument("--write", action="store_true")
     p_rc.set_defaults(func=cmd_remote_cycle)
@@ -185,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_turn.add_argument("--origin-target")
     p_turn.add_argument("--token")
     p_turn.add_argument("--timeout", type=int, default=20)
+    p_turn.add_argument("--message-limit", type=int, default=10)
     p_turn.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_turn.add_argument("--write", action="store_true")
     p_turn.add_argument("--payload-out")
@@ -201,6 +206,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--origin-target")
     p_st.add_argument("--token")
     p_st.add_argument("--timeout", type=int, default=20)
+    p_st.add_argument("--message-limit", type=int, default=10)
     p_st.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_st.add_argument("--write", action="store_true")
     p_st.add_argument("--payload-out")
