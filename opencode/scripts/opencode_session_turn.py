@@ -78,10 +78,18 @@ def main() -> None:
     if args.update_out:
         Path(args.update_out).write_text(update_text + ("\n" if update_text else ""))
 
+    delivery = {
+        "originSession": args.origin_session,
+        "originTarget": args.origin_target,
+        "shouldSend": bool(update_text),
+        "message": update_text or None,
+    }
+
     print(json.dumps({
         "control": control,
         "decision": (payload.get("decision") or {}),
         "updateEmitted": bool(update_text),
+        "delivery": delivery,
         "payload": payload,
         "update": update_text,
     }, ensure_ascii=False, indent=2))
