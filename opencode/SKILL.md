@@ -111,7 +111,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 
 ### Primary exposed surface
 - `references/control-surface.md` — unified control surface and command patterns.
-- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, remote snapshot, and remote cycle.
+- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, and remote cycle.
 
 ### Supporting references
 - `references/execution-model.md` — system model and layer responsibilities.
@@ -126,6 +126,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_api_client.py` — minimal OpenCode API client for session/status/todo/question/permission access.
 - `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
 - `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
+- `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
 
 ## Packaging guidance
 

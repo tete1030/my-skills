@@ -56,6 +56,15 @@ python3 scripts/opencodectl.py remote-cycle \
   [--write]
 ```
 
+### Replay a multi-step local scenario
+
+```bash
+python3 scripts/opencodectl.py scenario \
+  --state <state.json> \
+  --scenario <scenario.json> \
+  [--write]
+```
+
 ## Internal scripts
 
 The following scripts remain valid internal implementation pieces, but the skill should avoid treating them as the primary user-facing control surface:

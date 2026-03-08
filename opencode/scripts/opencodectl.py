@@ -66,6 +66,17 @@ def cmd_remote_cycle(args) -> int:
     return run_json("opencode_remote_cycle.py", command)
 
 
+
+def cmd_scenario(args) -> int:
+    command = [
+        "--state", args.state,
+        "--scenario", args.scenario,
+        "--no-change-visible-after-min", str(args.no_change_visible_after_min),
+    ]
+    if args.write:
+        command.append("--write")
+    return run_json("opencode_scenario.py", command)
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes."
@@ -104,6 +115,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_rc.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_rc.add_argument("--write", action="store_true")
     p_rc.set_defaults(func=cmd_remote_cycle)
+
+    p_sc = sub.add_parser("scenario", help="Replay a multi-step local scenario through the decision loop.")
+    p_sc.add_argument("--state", required=True)
+    p_sc.add_argument("--scenario", required=True)
+    p_sc.add_argument("--no-change-visible-after-min", type=int, default=30)
+    p_sc.add_argument("--write", action="store_true")
+    p_sc.set_defaults(func=cmd_scenario)
 
     return p
 
