@@ -1,8 +1,16 @@
 # Delivery Handoff
 
-Use this after `agent-turn-input` when the main agent wants an **origin-session systemEvent handoff** that points back to the original task-initiating OpenClaw session without turning the script layer into a renderer.
+Use this when the main agent wants an **origin-session systemEvent handoff** that points back to the original task-initiating OpenClaw session without turning the script layer into a renderer.
 
 ## Command
+
+Preferred input:
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json>
+```
+
+Legacy optional input:
 
 ```bash
 python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
@@ -16,7 +24,7 @@ Optional metadata-only switch:
 
 ```bash
 python3 scripts/opencodectl.py delivery-handoff \
-  --input <agent-turn-input.json> \
+  --input <turn-result.json> \
   --live-ready
 ```
 
@@ -26,24 +34,41 @@ Use it only when a downstream orchestrator already knows how to inject a `system
 
 ## Input expectation
 
-`delivery-handoff` expects the output of:
+`delivery-handoff` prefers the output of:
 
 ```bash
-python3 scripts/opencodectl.py agent-turn-input --input <turn-result.json>
+python3 scripts/opencodectl.py turn ...
 ```
 
-That means the input is already constrained to:
+That means the primary input is already constrained to:
 
 - send/skip recommendation
-- update classification
-- compact facts
+- compact fact skeleton
 - cadence
-- origin-preserving routing
+- origin-preserving delivery
+
+Internally, `delivery-handoff` compacts that turn result into the same small main-agent input shape that `agent-turn-input` exposes.
+If you already have a legacy `agent-turn-input` object, it is still accepted.
 
 ## Output shape
 
-It preserves the `agent-turn-input` object and adds one field:
+It emits the compact main-agent input and adds one field:
 
+- `openclawDelivery`
+
+So the full output shape remains:
+
+- `shouldSend`
+- `action`
+- `updateType`
+- `priority`
+- `style`
+- `reason`
+- `narrativeOwner`
+- `mentionFields`
+- `facts`
+- `cadence`
+- `routing`
 - `openclawDelivery`
 
 ### `openclawDelivery`
@@ -92,12 +117,12 @@ When `routeStatus=ready`, the adapter emits the **primary** origin-session injec
 The `text` is a structured JSON envelope prefixed with a stable header line.
 It carries:
 
-- the compact `agent-turn-input`
+- the compact main-agent input
 - the explicit delivery policy (`primary=origin_session_system_event`)
 - the explicit statement that cron is only `watchdog_only`
 
 This is intentionally **not user-facing prose**.
-The originating OpenClaw session consumes it as a system event, then the main-session agent decides whether/how to explain it to the user.
+The originating OpenClaw session can hand the decoded compact object straight to the main-session agent, which still decides whether/how to explain it to the user.
 
 ### `watchdogCronTemplate`
 
@@ -137,7 +162,7 @@ Cron is relegated to **fallback/watchdog** use:
 
 The primary model remains:
 
-`turn -> agent-turn-input -> delivery-handoff -> inject structured systemEvent into originating session -> origin-session-consume -> main-session agent decides visible reply`
+`turn -> delivery-handoff -> inject structured systemEvent into originating session -> main-session agent decides visible reply`
 
 ## Boundary
 
@@ -145,6 +170,7 @@ This layer may:
 
 - resolve origin routing into an origin-session `systemEvent` template
 - preserve the original raw routing fields
+- compact the turn result into the small main-agent input shape
 - detect routing conflicts and refuse silent rewrites
 - emit a watchdog-only cron fallback template using the same structured payload
 - stay dry-run by default

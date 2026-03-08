@@ -9,6 +9,7 @@ from opencode_agent_turn_input import (
     ALLOWED_ROUTING_KEYS,
     ALLOWED_TOP_LEVEL_KEYS as ALLOWED_AGENT_INPUT_KEYS,
     assert_agent_input_boundary,
+    build_agent_turn_input,
 )
 
 ALLOWED_HANDOFF_TOP_LEVEL_KEYS = frozenset(set(ALLOWED_AGENT_INPUT_KEYS) | {"openclawDelivery"})
@@ -40,6 +41,13 @@ def load_json(path: Path):
     return json.loads(path.read_text())
 
 
+def coerce_agent_input(data: dict) -> dict:
+    if not isinstance(data, dict):
+        raise ValueError("delivery-handoff expects a JSON object input")
+    if "factSkeleton" in data:
+        return build_agent_turn_input(data)
+    return assert_agent_input_boundary(dict(data))
+
 
 def parse_origin_target(value: str | None):
     if not value or not isinstance(value, str):
@@ -67,7 +75,6 @@ def parse_origin_target(value: str | None):
         "target": target,
         "threadId": thread_id,
     }
-
 
 
 def parse_origin_session(value: str | None):
@@ -102,7 +109,6 @@ def parse_origin_session(value: str | None):
     }
 
 
-
 def same_route(left, right) -> bool:
     if not left or not right:
         return False
@@ -117,7 +123,6 @@ def same_route(left, right) -> bool:
     )
 
 
-
 def build_system_event_envelope(agent_input: dict):
     base = assert_agent_input_boundary(dict(agent_input))
     envelope = {
@@ -130,7 +135,6 @@ def build_system_event_envelope(agent_input: dict):
         },
     }
     return assert_system_event_envelope_boundary(envelope)
-
 
 
 def assert_system_event_envelope_boundary(envelope: dict) -> dict:
@@ -151,7 +155,6 @@ def assert_system_event_envelope_boundary(envelope: dict) -> dict:
     return envelope
 
 
-
 def assert_system_event_payload_boundary(payload: dict) -> dict:
     payload_keys = set(payload)
     if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
@@ -166,11 +169,9 @@ def assert_system_event_payload_boundary(payload: dict) -> dict:
     return payload
 
 
-
 def encode_system_event_text(envelope: dict) -> str:
     safe_envelope = assert_system_event_envelope_boundary(dict(envelope))
     return SYSTEM_EVENT_TEXT_HEADER + "\n" + json.dumps(safe_envelope, ensure_ascii=False, indent=2)
-
 
 
 def decode_system_event_text(text: str) -> dict:
@@ -182,7 +183,6 @@ def decode_system_event_text(text: str) -> dict:
     except json.JSONDecodeError as exc:
         raise ValueError("delivery-handoff boundary violation: invalid system event JSON payload") from exc
     return assert_system_event_envelope_boundary(envelope)
-
 
 
 def resolve_origin_session_injection(routing: dict):
@@ -214,7 +214,6 @@ def resolve_origin_session_injection(routing: dict):
     }
 
 
-
 def build_system_event_template(session_key: str, text: str):
     return {
         "sessionKey": session_key,
@@ -223,7 +222,6 @@ def build_system_event_template(session_key: str, text: str):
             "text": text,
         },
     }
-
 
 
 def build_watchdog_cron_template(session_key: str, text: str):
@@ -235,7 +233,6 @@ def build_watchdog_cron_template(session_key: str, text: str):
             "text": text,
         },
     }
-
 
 
 def assert_handoff_boundary(result: dict) -> dict:
@@ -286,9 +283,8 @@ def assert_handoff_boundary(result: dict) -> dict:
     return result
 
 
-
-def build_delivery_handoff(agent_input: dict, dry_run: bool = True):
-    base = assert_agent_input_boundary(dict(agent_input))
+def build_delivery_handoff(data: dict, dry_run: bool = True):
+    base = coerce_agent_input(data)
     routing = base.get("routing") or {}
     route = resolve_origin_session_injection(routing)
     should_send = bool(base.get("shouldSend"))
@@ -329,10 +325,9 @@ def build_delivery_handoff(agent_input: dict, dry_run: bool = True):
     return assert_handoff_boundary(result)
 
 
-
 def main():
     p = argparse.ArgumentParser(
-        description="Resolve compact agent-turn input into an origin-session systemEvent handoff without rendering chat text or sending messages."
+        description="Resolve a structured turn result (preferred) or compact agent input into an origin-session systemEvent handoff without rendering chat text or sending messages."
     )
     p.add_argument("--input", required=True)
     p.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this command never sends messages")

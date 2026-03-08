@@ -3,10 +3,11 @@
 The happy path is:
 
 1. `turn` produces a small, mechanical result.
-2. `agent-turn-input` optionally adapts that result into compact main-agent guidance.
-3. `delivery-handoff` optionally resolves origin routing into an origin-session `systemEvent` handoff.
-4. `origin-session-consume` optionally unwraps that injected `systemEvent` into compact runtime intake for the originating session.
-5. The main-session agent writes the final user-facing explanation.
+2. `delivery-handoff` resolves origin routing and packages a structured origin-session `systemEvent` handoff directly from that turn result.
+3. The main-session agent consumes that handoff and writes the final user-facing explanation.
+
+`agent-turn-input` still exists, but only as an optional compact helper when you want to inspect the main-agent recommendation object directly.
+It is not required on the main path.
 
 ## Primary command
 
@@ -79,6 +80,7 @@ Mechanical visibility state:
 ## `agent-turn-input` boundary
 
 Use this only when the main-session agent wants a compact recommendation object without rendering chat text.
+It is an optional adapter, not a required hop in the happy path.
 
 ```bash
 python3 scripts/opencodectl.py agent-turn-input --input <turn-result.json>
@@ -114,15 +116,17 @@ This layer must not:
 
 ## `delivery-handoff` boundary
 
-Use this only when the next layer needs a safe origin-session `systemEvent` handoff without making the script layer the narrative owner.
+Use this when the next layer needs a safe origin-session `systemEvent` handoff without making the script layer the narrative owner.
+Preferred input is the raw `turn` result; legacy `agent-turn-input` also works.
 
 ```bash
-python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
+python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json>
 ```
 
 Allowed behavior:
 
-- preserve the `agent-turn-input` object
+- accept a raw `turn` result and internally compact it into main-agent input
+- accept a legacy `agent-turn-input` object without changing its behavior
 - add `openclawDelivery`
 - resolve origin routing into an origin-session `systemEvent` template when safe
 - emit a watchdog-only cron fallback template using the same structured system event
@@ -140,11 +144,10 @@ This layer must not:
 ## Main-agent consumption order
 
 1. `shouldSend`
-2. `delivery` / `routing`
+2. `routing`
 3. `openclawDelivery` when origin-session injection closure is needed
-4. `runtimeConsumption` when the originating session is unwrapping an injected system event
-5. facts
-6. cadence
+4. facts
+5. cadence
 
 Default mapping:
 
@@ -155,7 +158,10 @@ Default mapping:
 
 Primary delivery path:
 
-`openclawDelivery.systemEventTemplate -> inject into originating session -> origin-session-consume -> main-session agent decides visible reply`
+`turn -> delivery-handoff -> inject structured systemEvent into originating session -> main-session agent decides visible reply`
+
+The injected `systemEvent` already carries the compact mechanical handoff object.
+No separate script consumer is required on the happy path.
 
 Fallback only:
 

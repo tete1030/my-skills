@@ -39,10 +39,12 @@ That control should outrank ordinary timed/event-trigger defaults.
 3. `turn` reads compact remote/local state instead of re-reading full history.
 4. The cadence layer decides `visible_update` vs `silent_noop`.
 5. The turn result carries fact skeleton + cadence + origin routing.
-6. `agent-turn-input` compacts the result for main-session consumption.
-7. `delivery-handoff` packages the same compact facts into an origin-session `systemEvent` envelope when the turn should surface.
-8. `origin-session-consume` recognizes that injected event inside the originating session and unwraps it into compact runtime intake.
-9. The main-session agent decides whether/how to explain it to the user.
+6. `delivery-handoff` packages that turn into an origin-session `systemEvent` handoff.
+7. The structured handoff is injected into the origin session.
+8. The main-session agent decides whether/how to explain it to the user.
+
+`agent-turn-input` remains available only as an optional helper for inspecting the compact recommendation object on its own.
+It is not a required runtime hop.
 
 ## State expectations
 
@@ -83,8 +85,8 @@ Always preserve origin routing in the structured turn result:
 Primary consumption path:
 
 - inject a structured `systemEvent` into `delivery.originSession`
-- let `origin-session-consume` validate/unwrap that event inside the origin session
-- let the origin-session agent decide visible user-facing chat
+- let the originating session surface that compact handoff to the main-session agent
+- let the main-session agent decide visible user-facing chat
 
 Cross-check / fallback only:
 
