@@ -22,11 +22,18 @@ def run_capture(script_name: str, args: list[str]) -> str:
     return proc.stdout
 
 
+def load_json(path: str | None):
+    if not path:
+        return None
+    return json.loads(Path(path).read_text())
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Run one remote cycle and render a main-session-ready update.")
+    p = argparse.ArgumentParser(description="Run one main-session turn: optional control input + remote cycle + rendered update.")
     p.add_argument("--base-url", required=True)
     p.add_argument("--session-id", required=True)
     p.add_argument("--state", required=True)
+    p.add_argument("--control")
     p.add_argument("--token")
     p.add_argument("--timeout", type=int, default=20)
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
@@ -50,6 +57,15 @@ def main() -> None:
 
     cycle_stdout = run_capture("opencode_remote_cycle.py", cycle_args)
     payload = json.loads(cycle_stdout)
+    control = load_json(args.control)
+
+    if control is not None:
+        payload["control"] = control
+        if isinstance(payload.get("after"), dict):
+            payload["after"].update(control)
+        if isinstance(payload.get("before"), dict):
+            # preserve original before-state; do not mutate it with control
+            pass
 
     if args.payload_out:
         Path(args.payload_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -67,6 +83,7 @@ def main() -> None:
         Path(args.update_out).write_text(update_text + ("\n" if update_text else ""))
 
     print(json.dumps({
+        "control": control,
         "payload": payload,
         "update": update_text,
     }, ensure_ascii=False, indent=2))

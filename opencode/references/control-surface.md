@@ -95,9 +95,11 @@ python3 scripts/opencodectl.py session-turn \
   --base-url <url> \
   --session-id <session-id> \
   --state <state.json> \
+  [--control <control.json>] \
   [--write] \
   [--payload-out <payload.json>] \
   [--update-out <update.txt>]
 ```
 
 This is the preferred higher-level experiment entrypoint when you want one remote observation pass plus one rendered main-session update.
+Use `--control` when the current chat turn also changes execution policy or other control state.

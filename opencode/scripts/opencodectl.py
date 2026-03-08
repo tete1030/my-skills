@@ -45,6 +45,8 @@ def cmd_cycle(args) -> int:
 
 def cmd_snapshot(args) -> int:
     command = ["--base-url", args.base_url, "--session-id", args.session_id]
+    if args.control:
+        command += ["--control", args.control]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -58,6 +60,8 @@ def cmd_remote_cycle(args) -> int:
         "--state", args.state,
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
+    if args.control:
+        command += ["--control", args.control]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -93,6 +97,8 @@ def cmd_session_turn(args) -> int:
         "--timeout", str(args.timeout),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
+    if args.control:
+        command += ["--control", args.control]
     if args.token:
         command += ["--token", args.token]
     if args.write:
@@ -160,6 +166,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--base-url", required=True)
     p_st.add_argument("--session-id", required=True)
     p_st.add_argument("--state", required=True)
+    p_st.add_argument("--control")
     p_st.add_argument("--token")
     p_st.add_argument("--timeout", type=int, default=20)
     p_st.add_argument("--no-change-visible-after-min", type=int, default=30)
