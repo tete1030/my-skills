@@ -47,6 +47,7 @@ Happy-path consumers should read fields such as:
 - `cadence`
 
 The main-session agent should turn those facts into the final chat message.
+If a compact adapter is useful, transform the turn result into agent-facing recommendation/input metadata rather than back into rendered prose.
 
 Delivery metadata should point back to the original task-initiating session.
 
@@ -132,6 +133,15 @@ python3 scripts/opencodectl.py explain-turn \
 ```
 
 Use this when debugging why a turn emitted or skipped a visible update, or when you want a compact summary of the fact skeleton plus cadence.
+
+### Build compact main-agent input from one turn result
+
+```bash
+python3 scripts/opencodectl.py agent-turn-input \
+  --input <session-turn-result.json>
+```
+
+Use this when the main-session agent wants a compact recommendation/input object for send/skip, update type, brevity, and routing preservation without turning the script layer back into a message renderer.
 
 ## Internal scripts
 

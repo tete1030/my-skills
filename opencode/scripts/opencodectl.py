@@ -117,6 +117,11 @@ def cmd_explain_turn(args) -> int:
     return run_json("opencode_explain_turn.py", command)
 
 
+def cmd_agent_turn_input(args) -> int:
+    command = ["--input", args.input]
+    return run_json("opencode_agent_turn_input.py", command)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes. Happy-path turn output is structured facts plus cadence and delivery metadata."
@@ -203,6 +208,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_et = sub.add_parser("explain-turn", help="Explain a structured turn result in compact debug form.")
     p_et.add_argument("--input", required=True)
     p_et.set_defaults(func=cmd_explain_turn)
+
+    p_ati = sub.add_parser("agent-turn-input", help="Transform a structured turn result into compact main-agent input without rendering chat prose.")
+    p_ati.add_argument("--input", required=True)
+    p_ati.set_defaults(func=cmd_agent_turn_input)
 
     return p
 

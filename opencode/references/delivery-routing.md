@@ -41,6 +41,7 @@ Treat delivery as explicit metadata attached to a structured turn result:
 - `shouldSend` is derived from the cadence/decision layer, not forced by the transport layer.
 - The transport or main-session layer should send only when `shouldSend == true`.
 - If execution happens in a lab/debug context, keep that separate from delivery metadata.
+- Any agent-facing adapter/helper must preserve `originSession` / `originTarget` explicitly instead of replacing them with its own runtime context.
 - The main-session agent should write the final explanation; routing metadata only says **where** it should go.
 
 ## Current prototype scope

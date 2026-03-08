@@ -13,6 +13,7 @@ The main-session agent should read the turn result, decide whether to speak, and
 - Preserve delivery routing metadata so explanation goes back to the originating session.
 - Expose cadence/no-change state so the main agent can stay quiet or be brief on purpose.
 - Avoid replaying raw API payloads into chat.
+- If a helper is used, make it emit recommendation/input metadata for the main agent rather than rendered message text.
 
 ## Happy-path output
 
@@ -31,6 +32,14 @@ This is enough for the main-session agent to decide:
 - whether the update is routine, corrective, or escalatory.
 
 ## How the main agent should use it
+
+Consume the fields in this order:
+1. `shouldSend`
+2. `delivery`
+3. `factSkeleton`
+4. `cadence`
+
+That keeps send/skip, routing, facts, and explanation style separate.
 
 ### Running / phase moved
 Use the fact skeleton to say what changed and what the agent is doing now.

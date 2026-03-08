@@ -23,8 +23,9 @@ Keep the main session as the primary decision surface and the primary user-visib
 3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
 4. Read `references/control-surface.md` for the unified script entrypoint and the intended exposed control surface.
 5. Read `references/turn-output.md` when adjusting the boundary between structured turn facts and final main-session explanation.
-6. Read `references/reporting-policy.md` when adjusting how decision results should guide visible updates in the main session.
-7. Read `references/delivery-routing.md` when adjusting where updates should be delivered.
+6. Read `references/agent-consumption.md` when adjusting how the main-session agent should consume a turn result and choose final user-facing output.
+7. Read `references/reporting-policy.md` when adjusting how decision results should guide visible updates in the main session.
+8. Read `references/delivery-routing.md` when adjusting where updates should be delivered.
 
 ## Use this skill for four kinds of work
 
@@ -53,7 +54,7 @@ Default to the unified entrypoint:
 Treat `opencodectl.py turn` as the **primary happy path** for real operation.
 Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final result envelope.
 When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the current execution context.
-Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`, and use raw payload output only in explicit debug flows.
+Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`; for the main-session consumer boundary, prefer `opencodectl.py agent-turn-input`; and use raw payload output only in explicit debug flows.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -111,6 +112,7 @@ When a turn completes, prefer a structured result that surfaces:
 - originating-session delivery metadata.
 
 The main-session agent should use that structure to write the final user-facing explanation.
+When a compact consumption hint is useful, transform the turn result into an agent-facing recommendation/input object rather than back into rendered chat prose.
 Do **not** make the renderer the primary owner of the conversation narrative.
 
 ### Step 6: Keep heavy work as assistance, not as the narrative owner
@@ -140,6 +142,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `references/control-inputs.md` — how to interpret user input as control state.
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
 - `references/api-surface.md` — current known OpenCode API surface used by the prototypes.
+- `references/agent-consumption.md` — how the main-session agent should consume turn results, respect `shouldSend`, and preserve delivery semantics without turning scripts into narrators.
 - `references/reporting-policy.md` — how structured turn results should guide concise visible main-session updates.
 - `references/delivery-routing.md` — how originating-session delivery should be modeled and preserved.
 
@@ -153,6 +156,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
 - `scripts/opencode_session_turn.py` — combine remote-cycle output into one higher-level turn result with fact skeleton, cadence, and delivery metadata.
 - `scripts/opencode_explain_turn.py` — summarize why a turn emitted or skipped a visible update and expose the structured turn facts for debugging.
+- `scripts/opencode_agent_turn_input.py` — transform a structured turn result into compact main-agent input/recommendation without rendering final chat prose.
 
 ## Packaging guidance
 
