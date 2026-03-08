@@ -44,8 +44,9 @@ Use this skill to decide:
 Default to the unified entrypoint:
 - `scripts/opencodectl.py`
 
-Prefer `session-turn` when you want one remote observation pass plus one main-session-ready update. Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
-Use lower-level scripts only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`.
+Treat `opencodectl.py turn` as the **primary happy path** for real operation.
+Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
+Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -119,8 +120,8 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 ## Current packaged resources
 
 ### Primary exposed surface
-- `references/control-surface.md` — unified control surface and command patterns.
-- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, visible update rendering, one-shot session turns, and turn explanation/debugging.
+- `references/control-surface.md` — unified control surface and command patterns, with `turn` as the primary happy path.
+- `scripts/opencodectl.py` — unified operational entrypoint for the happy-path turn workflow plus lower-level state/cycle/debug commands.
 
 ### Supporting references
 - `references/execution-model.md` — system model and layer responsibilities.

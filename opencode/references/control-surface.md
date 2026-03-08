@@ -14,6 +14,29 @@ Use:
 python3 scripts/opencodectl.py ...
 ```
 
+## Happy path
+
+For normal operation, prefer **one command**:
+
+```bash
+python3 scripts/opencodectl.py turn \
+  --base-url <url> \
+  --session-id <session-id> \
+  --state <state.json> \
+  [--control <control.json>] \
+  [--write] \
+  [--payload-out <payload.json>] \
+  [--update-out <update.txt>]
+```
+
+This is the default high-level path for a single main-session turn:
+- apply control input if present;
+- observe remote OpenCode state;
+- decide whether a visible update is warranted;
+- render a concise main-session update.
+
+Use lower-level commands only when debugging or testing a narrower layer.
+
 ## Supported commands
 
 ### Initialize state
@@ -35,7 +58,6 @@ python3 scripts/opencodectl.py cycle \
   --state <state.json> \
   [--control <control.json>] \
   [--observation <observation.json>] \
-  [--control <control.json>] \
   [--write]
 ```
 
@@ -54,6 +76,7 @@ python3 scripts/opencodectl.py remote-cycle \
   --base-url <url> \
   --session-id <session-id> \
   --state <state.json> \
+  [--control <control.json>] \
   [--write]
 ```
 
