@@ -24,6 +24,8 @@ python3 scripts/opencodectl.py turn \
   --session-id <session-id> \
   --state <state.json> \
   [--control <control.json>] \
+  [--origin-session <session>] \
+  [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
   [--update-out <update.txt>]
@@ -34,6 +36,8 @@ This is the default high-level path for a single main-session turn:
 - observe remote OpenCode state;
 - decide whether a visible update is warranted;
 - render a concise main-session update.
+
+Delivery metadata should point back to the original task-initiating session.
 
 Use lower-level commands only when debugging or testing a narrower layer.
 
@@ -120,6 +124,8 @@ python3 scripts/opencodectl.py session-turn \
   --session-id <session-id> \
   --state <state.json> \
   [--control <control.json>] \
+  [--origin-session <session>] \
+  [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
   [--update-out <update.txt>]

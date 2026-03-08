@@ -21,6 +21,7 @@ Keep the main session as the primary decision surface and the primary user-visib
 3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
 4. Read `references/control-surface.md` for the unified script entrypoint and the intended exposed control surface.
 5. Read `references/reporting-policy.md` when adjusting how decision results become concise visible updates in the main session.
+6. Read `references/delivery-routing.md` when adjusting where updates should be delivered.
 
 ## Use this skill for four kinds of work
 
@@ -46,6 +47,7 @@ Default to the unified entrypoint:
 
 Treat `opencodectl.py turn` as the **primary happy path** for real operation.
 Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
+When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the lab/debug context.
 Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`.
 
 ### 4. Experimentation support
@@ -129,6 +131,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
 - `references/api-surface.md` — current known OpenCode API surface used by the prototypes.
 - `references/reporting-policy.md` — how decisions become concise visible main-session updates.
+- `references/delivery-routing.md` — how originating-session delivery should be modeled and preserved.
 
 ### Internal implementation scripts
 - `scripts/opencode_control_state.py` — local helper for iterating on state/control merges.

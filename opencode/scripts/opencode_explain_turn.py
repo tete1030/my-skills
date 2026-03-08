@@ -42,6 +42,9 @@ def main():
         "latestTextPreview": latest.get("message.lastTextPreview"),
         "updateEmitted": bool(data.get("update")) if isinstance(data, dict) else None,
         "updateText": data.get("update") if isinstance(data, dict) else None,
+        "originSession": get(data, "delivery", "originSession"),
+        "originTarget": get(data, "delivery", "originTarget"),
+        "shouldSend": get(data, "delivery", "shouldSend"),
     }
     print(json.dumps(out, ensure_ascii=False, indent=2))
 

@@ -34,6 +34,8 @@ def main() -> None:
     p.add_argument("--session-id", required=True)
     p.add_argument("--state", required=True)
     p.add_argument("--control")
+    p.add_argument("--origin-session")
+    p.add_argument("--origin-target")
     p.add_argument("--token")
     p.add_argument("--timeout", type=int, default=20)
     p.add_argument("--no-change-visible-after-min", type=int, default=30)

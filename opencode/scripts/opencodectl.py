@@ -64,6 +64,10 @@ def cmd_remote_cycle(args) -> int:
     ]
     if args.control:
         command += ["--control", args.control]
+    if args.origin_session:
+        command += ["--origin-session", args.origin_session]
+    if args.origin_target:
+        command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -175,6 +179,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_turn.add_argument("--session-id", required=True)
     p_turn.add_argument("--state", required=True)
     p_turn.add_argument("--control")
+    p_turn.add_argument("--origin-session")
+    p_turn.add_argument("--origin-target")
     p_turn.add_argument("--token")
     p_turn.add_argument("--timeout", type=int, default=20)
     p_turn.add_argument("--no-change-visible-after-min", type=int, default=30)
@@ -189,6 +195,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--session-id", required=True)
     p_st.add_argument("--state", required=True)
     p_st.add_argument("--control")
+    p_st.add_argument("--origin-session")
+    p_st.add_argument("--origin-target")
     p_st.add_argument("--token")
     p_st.add_argument("--timeout", type=int, default=20)
     p_st.add_argument("--no-change-visible-after-min", type=int, default=30)
