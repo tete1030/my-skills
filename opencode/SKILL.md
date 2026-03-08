@@ -45,7 +45,7 @@ Default to the unified entrypoint:
 - `scripts/opencodectl.py`
 
 Prefer `session-turn` when you want one remote observation pass plus one main-session-ready update. Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
-Use lower-level scripts only when debugging or refining internals.
+Use lower-level scripts only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -120,7 +120,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 
 ### Primary exposed surface
 - `references/control-surface.md` — unified control surface and command patterns.
-- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, visible update rendering, and one-shot session turns.
+- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, visible update rendering, one-shot session turns, and turn explanation/debugging.
 
 ### Supporting references
 - `references/execution-model.md` — system model and layer responsibilities.
@@ -139,6 +139,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
 - `scripts/opencode_render_update.py` — render a concise main-session progress message from cycle results.
 - `scripts/opencode_session_turn.py` — combine remote-cycle and update rendering into one higher-level turn.
+- `scripts/opencode_explain_turn.py` — summarize why a turn emitted or skipped a visible update.
 
 ## Packaging guidance
 

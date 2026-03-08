@@ -104,3 +104,13 @@ python3 scripts/opencodectl.py session-turn \
 
 This is the preferred higher-level experiment entrypoint when you want one remote observation pass plus one rendered main-session update.
 Use `--control` when the current chat turn also changes execution policy or other control state.
+
+
+### Explain one turn result
+
+```bash
+python3 scripts/opencodectl.py explain-turn \
+  --input <session-turn-result.json>
+```
+
+Use this when debugging why a turn emitted a visible update, stayed silent, or chose a particular reason.

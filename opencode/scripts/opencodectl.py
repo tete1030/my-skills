@@ -113,6 +113,11 @@ def cmd_session_turn(args) -> int:
         command.append("--quiet-when-empty")
     return run_json("opencode_session_turn.py", command)
 
+
+def cmd_explain_turn(args) -> int:
+    command = ["--input", args.input]
+    return run_json("opencode_explain_turn.py", command)
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes."
@@ -178,6 +183,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--update-out")
     p_st.add_argument("--quiet-when-empty", action="store_true")
     p_st.set_defaults(func=cmd_session_turn)
+
+    p_et = sub.add_parser("explain-turn", help="Explain why a session-turn did or did not emit a visible update.")
+    p_et.add_argument("--input", required=True)
+    p_et.set_defaults(func=cmd_explain_turn)
 
     return p
 
