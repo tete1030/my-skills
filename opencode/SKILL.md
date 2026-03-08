@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Design, iterate, and operate an OpenCode execution/monitoring workflow for OpenClaw using a main-session-centered model with visible progress, trigger handling, control-input interpretation, shared state continuity, and cadence-controlled no-change updates. Use when building or refining the OpenCode skill, its state model, trigger flow, visible progress policy, or experimentation workflow.
+description: Design, iterate, and operate an OpenCode execution/monitoring workflow for OpenClaw using a main-session-centered model with visible progress, trigger handling, control-input interpretation, shared state continuity, cadence-controlled no-change updates, and structured turn outputs that separate mechanical facts from final user-facing explanation. Use when building or refining the OpenCode skill, its state model, trigger flow, visible progress policy, delivery routing, or experimentation workflow.
 ---
 
 # Opencode
@@ -12,6 +12,9 @@ Keep the main session as the primary decision surface and the primary user-visib
 - Treat timed triggers and event triggers as **input layers**, not as the main execution owner.
 - Treat user chat input as **high-priority control input**.
 - Prefer `executionMode = main_session_centered` unless a later design revision explicitly changes it.
+- Treat `opencodectl.py turn` as the **happy-path structured turn output**.
+- Let mechanical/script layers emit facts, cadence, and routing metadata; let the main-session agent write the final explanation.
+- Treat `render-update` as fallback/debug, not as the primary narrative path.
 - Keep environment-specific paths, hostnames, credentials, and local lab details **out of the skill package and out of committed docs**.
 
 ## Read order
@@ -20,8 +23,9 @@ Keep the main session as the primary decision surface and the primary user-visib
 2. Read `references/control-inputs.md` when changing how user instructions affect execution.
 3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
 4. Read `references/control-surface.md` for the unified script entrypoint and the intended exposed control surface.
-5. Read `references/reporting-policy.md` when adjusting how decision results become concise visible updates in the main session.
-6. Read `references/delivery-routing.md` when adjusting where updates should be delivered.
+5. Read `references/turn-output.md` when adjusting the boundary between structured turn facts and final main-session explanation.
+6. Read `references/reporting-policy.md` when adjusting how decision results should guide visible updates in the main session.
+7. Read `references/delivery-routing.md` when adjusting where updates should be delivered.
 
 ## Use this skill for four kinds of work
 
@@ -31,7 +35,8 @@ Use this skill to refine:
 - control-state modeling;
 - trigger/data-flow behavior;
 - visible progress policy;
-- no-change handling.
+- no-change handling;
+- structured turn output boundaries.
 
 ### 2. Runtime behavior definition
 Use this skill to decide:
@@ -39,16 +44,17 @@ Use this skill to decide:
 - what can run in the background;
 - when to produce visible updates;
 - when to stay silent;
-- when to escalate.
+- when to escalate;
+- which parts are mechanical facts versus final explanation.
 
 ### 3. Prototype logic locally
 Default to the unified entrypoint:
 - `scripts/opencodectl.py`
 
 Treat `opencodectl.py turn` as the **primary happy path** for real operation.
-Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
-When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the lab/debug context.
-Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`.
+Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final result envelope.
+When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the current execution context.
+Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`. Use `render-update` only when you explicitly need a fallback/debug sentence.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -97,12 +103,16 @@ For each decision opportunity, choose one of these broad outcomes:
 No-change still enters the decision layer.
 The question is not “did nothing happen?” but “does the user need a visible update or action now?”
 
-### Step 5: Render user-facing progress deliberately
-When a visible update is warranted, render a concise main-session message from the cycle payload instead of dumping raw state or raw API output.
-Prefer short, human-readable updates that mention:
+### Step 5: Emit structured turn facts deliberately
+When a turn completes, prefer a structured result that surfaces:
+- normalized status;
 - current phase;
-- whether the task is running / blocked / failed / completed;
-- a short preview of recent meaningful output when available.
+- latest meaningful preview;
+- cadence / send-or-skip reason;
+- originating-session delivery metadata.
+
+The main-session agent should use that structure to write the final user-facing explanation.
+Do **not** make the renderer the primary owner of the conversation narrative.
 
 ### Step 6: Keep heavy work as assistance, not as the narrative owner
 Background workers or subagents may perform heavy work, but:
@@ -123,6 +133,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 
 ### Primary exposed surface
 - `references/control-surface.md` — unified control surface and command patterns, with `turn` as the primary happy path.
+- `references/turn-output.md` — structured turn envelope and the boundary between mechanical facts and final explanation.
 - `scripts/opencodectl.py` — unified operational entrypoint for the happy-path turn workflow plus lower-level state/cycle/debug commands.
 
 ### Supporting references
@@ -130,7 +141,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `references/control-inputs.md` — how to interpret user input as control state.
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
 - `references/api-surface.md` — current known OpenCode API surface used by the prototypes.
-- `references/reporting-policy.md` — how decisions become concise visible main-session updates.
+- `references/reporting-policy.md` — how structured turn results should guide concise visible main-session updates.
 - `references/delivery-routing.md` — how originating-session delivery should be modeled and preserved.
 
 ### Internal implementation scripts
@@ -141,12 +152,12 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
 - `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
-- `scripts/opencode_render_update.py` — render a concise main-session progress message from cycle results.
-- `scripts/opencode_session_turn.py` — combine remote-cycle and update rendering into one higher-level turn.
-- `scripts/opencode_explain_turn.py` — summarize why a turn emitted or skipped a visible update.
+- `scripts/opencode_render_update.py` — fallback/debug renderer that turns a turn result or cycle payload into a generic sentence when needed.
+- `scripts/opencode_session_turn.py` — combine remote-cycle output into one higher-level turn result with fact skeleton, cadence, and delivery metadata.
+- `scripts/opencode_explain_turn.py` — summarize why a turn emitted or skipped a visible update and expose the structured turn facts for debugging.
 
 ## Packaging guidance
 
 Only keep runtime-relevant instructions and reusable resources inside the skill.
 
-Do **not** put high-level iteration history, archive proposals, or environment-specific experiment notes inside the skill package. Keep those at the repo level.
+Do **not** put high-level iteration history, archive proposals, or environment-specific experiment notes inside the skill package.

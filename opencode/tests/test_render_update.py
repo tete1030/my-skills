@@ -40,6 +40,30 @@ class RenderUpdateTests(unittest.TestCase):
         self.assertIn('当前仍处于运行中', text)
         self.assertIn('连续 no-change 次数：3', text)
 
+    def test_render_from_structured_turn_result(self):
+        payload = {
+            'factSkeleton': {
+                'status': 'blocked',
+                'phase': 'Await approval',
+                'latestMeaningfulPreview': 'Permission request pending',
+                'reason': 'status=blocked',
+            },
+            'shouldSend': True,
+            'delivery': {
+                'originSession': 'agent:main:telegram:group:-1003607560565:topic:3348',
+                'originTarget': 'telegram:-1003607560565:topic:3348',
+            },
+            'cadence': {
+                'decision': 'visible_update',
+                'noChange': False,
+                'consecutiveNoChangeCount': 0,
+            },
+        }
+        text = self.render(payload)
+        self.assertIn('被阻塞', text)
+        self.assertIn('Await approval', text)
+        self.assertIn('Permission request pending', text)
+
 
 if __name__ == '__main__':
     unittest.main()

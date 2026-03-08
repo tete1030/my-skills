@@ -28,8 +28,87 @@ def load_json(path: str | None):
     return json.loads(Path(path).read_text())
 
 
+def short(text, n=120):
+    if not text:
+        return None
+    text = " ".join(str(text).split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def latest_meaningful_preview(payload):
+    snapshot = payload.get("snapshot") or {}
+    latest = snapshot.get("latestMessage") or {}
+    preview = (
+        snapshot.get("latestAssistantTextPreview")
+        or snapshot.get("latestTextPreview")
+        or latest.get("message.lastTextPreview")
+        or latest.get("textPreview")
+    )
+    return short(preview)
+
+
+def build_fact_skeleton(payload):
+    observation = payload.get("observation") or {}
+    after = payload.get("after") or {}
+    decision = payload.get("decision") or {}
+    return {
+        "status": observation.get("status") or after.get("status") or "unknown",
+        "phase": observation.get("phase") or after.get("phase"),
+        "latestMeaningfulPreview": latest_meaningful_preview(payload),
+        "reason": decision.get("reason"),
+    }
+
+
+def build_cadence(payload):
+    observation = payload.get("observation") or {}
+    after = payload.get("after") or {}
+    decision = payload.get("decision") or {}
+    return {
+        "decision": decision.get("decision"),
+        "noChange": observation.get("noChange"),
+        "consecutiveNoChangeCount": after.get("consecutiveNoChangeCount"),
+        "lastVisibleUpdateAt": after.get("lastVisibleUpdateAt"),
+    }
+
+
+def build_turn_result(payload, control=None, origin_session=None, origin_target=None, fallback_text=None):
+    fact_skeleton = build_fact_skeleton(payload)
+    cadence = build_cadence(payload)
+    delivery = {
+        "originSession": origin_session,
+        "originTarget": origin_target,
+    }
+    should_send = cadence.get("decision") == "visible_update"
+    return {
+        "factSkeleton": fact_skeleton,
+        "shouldSend": should_send,
+        "delivery": delivery,
+        "cadence": cadence,
+        "control": control,
+        "fallback": {
+            "renderedUpdate": fallback_text or None,
+        },
+        "payload": payload,
+    }
+
+
+def maybe_render_fallback(payload, quiet_when_empty=False):
+    tmp_path = None
+    try:
+        with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as tmp:
+            tmp.write(json.dumps(payload, ensure_ascii=False, indent=2))
+            tmp_path = tmp.name
+        render_args = ["--input", tmp_path]
+        if quiet_when_empty:
+            render_args.append("--quiet-when-empty")
+        return run_capture("opencode_render_update.py", render_args).rstrip("\n")
+    finally:
+        if tmp_path:
+            Path(tmp_path).unlink(missing_ok=True)
+
+
 def main() -> None:
-    p = argparse.ArgumentParser(description="Run one main-session turn: optional control input + remote cycle + rendered update.")
+    p = argparse.ArgumentParser(description="Run one main-session turn and emit a structured fact skeleton with cadence and delivery metadata.")
     p.add_argument("--base-url", required=True)
     p.add_argument("--session-id", required=True)
     p.add_argument("--state", required=True)
@@ -68,33 +147,22 @@ def main() -> None:
     if args.payload_out:
         Path(args.payload_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
 
-    with tempfile.NamedTemporaryFile("w+", suffix=".json", delete=False) as tmp:
-        tmp.write(json.dumps(payload, ensure_ascii=False, indent=2))
-        tmp_path = tmp.name
-
-    render_args = ["--input", tmp_path]
-    if args.quiet_when_empty:
-        render_args.append("--quiet-when-empty")
-    update_text = run_capture("opencode_render_update.py", render_args).rstrip("\n")
-
+    fallback_text = None
     if args.update_out:
-        Path(args.update_out).write_text(update_text + ("\n" if update_text else ""))
+        fallback_text = maybe_render_fallback(payload, quiet_when_empty=args.quiet_when_empty)
+        Path(args.update_out).write_text(fallback_text + ("\n" if fallback_text else ""))
 
-    delivery = {
-        "originSession": args.origin_session,
-        "originTarget": args.origin_target,
-        "shouldSend": bool(update_text),
-        "message": update_text or None,
-    }
-
-    print(json.dumps({
-        "control": control,
-        "decision": (payload.get("decision") or {}),
-        "updateEmitted": bool(update_text),
-        "delivery": delivery,
-        "payload": payload,
-        "update": update_text,
-    }, ensure_ascii=False, indent=2))
+    print(json.dumps(
+        build_turn_result(
+            payload,
+            control=control,
+            origin_session=args.origin_session,
+            origin_target=args.origin_target,
+            fallback_text=fallback_text,
+        ),
+        ensure_ascii=False,
+        indent=2,
+    ))
 
 
 if __name__ == "__main__":

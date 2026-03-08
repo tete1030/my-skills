@@ -2,43 +2,57 @@
 
 ## Goal
 
-The system should not stop at state and decision logic. It should also produce concise, human-readable progress updates suitable for the main session.
+Mechanical layers should produce concise **facts plus cadence**, not own the final user-facing narrative.
+
+The main-session agent should read the turn result, decide whether to speak, and write the final explanation in the live conversation context.
 
 ## Principles
 
-- Prefer short updates over long explanations.
-- Only produce a visible update when the decision layer says one is warranted.
-- Distinguish between:
-  - phase/state movement;
-  - blocked/failed/completed conditions;
-  - accumulated no-change summaries.
+- Prefer compact fact skeletons over prewritten chat prose.
+- Keep `shouldSend` separate from the final wording.
+- Preserve delivery routing metadata so explanation goes back to the originating session.
+- Expose cadence/no-change state so the main agent can stay quiet or be brief on purpose.
 - Avoid replaying raw API payloads into chat.
+- Treat `render-update` as fallback/debug only.
 
-## Recommended output categories
+## Happy-path output
+
+The normal turn output should emphasize:
+- `factSkeleton.status`
+- `factSkeleton.phase`
+- `factSkeleton.latestMeaningfulPreview`
+- `factSkeleton.reason`
+- `shouldSend`
+- `delivery`
+- `cadence`
+
+This is enough for the main-session agent to decide:
+- whether to send anything now;
+- how much detail to include;
+- whether the update is routine, corrective, or escalatory.
+
+## How the main agent should use it
 
 ### Running / phase moved
-Explain briefly:
-- what changed;
-- current phase;
-- short preview of latest meaningful text, if available.
+Use the fact skeleton to say what changed and what the agent is doing now.
 
 ### No-change visible heartbeat
-Explain briefly:
-- still running;
-- no significant change;
-- monitoring continues.
+Use cadence fields to keep the update short and avoid sounding like a black-box timer.
 
 ### Blocked
-Explain clearly:
-- what is blocking;
-- whether user input or approval seems required.
+Explain what is blocking and whether user input, approval, or intervention is likely needed.
 
 ### Failed
-Explain clearly:
-- task appears failed;
-- agent should inspect or intervene.
+Explain that the task appears failed and what inspection or recovery should happen next.
 
 ### Completed
-Explain clearly:
-- task appears complete;
-- summarize latest useful result if present.
+Explain that the task appears complete and summarize the latest meaningful preview if it helps.
+
+## Fallback renderer
+
+Use `render-update` only when you need a generic sentence quickly for:
+- debugging;
+- sanity checks;
+- compatibility with older flows.
+
+If the main-session agent is available, prefer agent-written explanation over renderer-written prose.

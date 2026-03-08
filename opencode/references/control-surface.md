@@ -28,18 +28,35 @@ python3 scripts/opencodectl.py turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <update.txt>]
+  [--update-out <fallback.txt>]
 ```
 
 This is the default high-level path for a single main-session turn:
 - apply control input if present;
 - observe remote OpenCode state;
 - decide whether a visible update is warranted;
-- render a concise main-session update.
+- emit a structured turn result containing fact skeleton fields, cadence, and delivery metadata.
+
+Happy-path consumers should read fields such as:
+- `factSkeleton.status`
+- `factSkeleton.phase`
+- `factSkeleton.latestMeaningfulPreview`
+- `factSkeleton.reason`
+- `shouldSend`
+- `delivery`
+- `cadence`
+
+The main-session agent should turn those facts into the final chat message.
 
 Delivery metadata should point back to the original task-initiating session.
 
 Use lower-level commands only when debugging or testing a narrower layer.
+
+## Optional fallback text
+
+`--update-out` is optional and should be treated as a **fallback/debug artifact**.
+
+It exists for compatibility or inspection when you want a generic rendered sentence, but it is not the authoritative happy-path output.
 
 ## Supported commands
 
@@ -93,30 +110,18 @@ python3 scripts/opencodectl.py scenario \
   [--write]
 ```
 
-## Internal scripts
-
-The following scripts remain valid internal implementation pieces, but the skill should avoid treating them as the primary user-facing control surface:
-
-- `opencode_control_state.py`
-- `opencode_decision_gate.py`
-- `opencode_cycle.py`
-- `opencode_api_client.py`
-- `opencode_snapshot.py`
-- `opencode_remote_cycle.py`
-
-Use them for debugging, targeted prototyping, or later refactoring—not as the first interface the skill agent must memorize.
-
-
-### Render a main-session update
+### Render a fallback/debug update
 
 ```bash
 python3 scripts/opencodectl.py render-update \
-  --input <cycle-output.json> \
+  --input <turn-or-cycle-result.json> \
   [--quiet-when-empty]
 ```
 
+Use this when you need a generic sentence for debugging, inspection, or compatibility with older experiments.
+Do **not** treat it as the primary main-session narrative path.
 
-### Run one main-session-ready remote turn
+### Alias for the happy-path turn
 
 ```bash
 python3 scripts/opencodectl.py session-turn \
@@ -128,12 +133,11 @@ python3 scripts/opencodectl.py session-turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <update.txt>]
+  [--update-out <fallback.txt>]
 ```
 
-This is the preferred higher-level experiment entrypoint when you want one remote observation pass plus one rendered main-session update.
+`session-turn` is an explicit alias for the same happy-path structured turn workflow.
 Use `--control` when the current chat turn also changes execution policy or other control state.
-
 
 ### Explain one turn result
 
@@ -142,4 +146,17 @@ python3 scripts/opencodectl.py explain-turn \
   --input <session-turn-result.json>
 ```
 
-Use this when debugging why a turn emitted a visible update, stayed silent, or chose a particular reason.
+Use this when debugging why a turn emitted or skipped a visible update, or when you want a compact summary of the fact skeleton plus cadence.
+
+## Internal scripts
+
+The following scripts remain valid internal implementation pieces, but the skill should avoid treating them as the primary user-facing control surface:
+
+- `opencode_control_state.py`
+- `opencode_decision_gate.py`
+- `opencode_cycle.py`
+- `opencode_api_client.py`
+- `opencode_snapshot.py`
+- `opencode_remote_cycle.py`
+
+Use them for debugging, targeted prototyping, or later refactoring — not as the first interface the skill agent must memorize.
