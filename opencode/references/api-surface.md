@@ -81,6 +81,12 @@ For now, the skill should treat the OpenCode API layer primarily as:
 
 Use the API layer to build compact snapshots that feed the main-session decision loop.
 
+## Normalization note
+
+A `null` phase is not always a bug. When todo is genuinely empty for a completed or running session, the correct normalized result may still be:
+- `phase = null`
+- but `status`, `latestTextPreview`, and `lastSeenMessageId` should remain useful.
+
 Recommended normalized snapshot fields:
 
 - `latestMessage.id`

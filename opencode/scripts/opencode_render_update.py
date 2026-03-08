@@ -66,6 +66,8 @@ def render(payload):
         base = "OpenCode 进展：任务看起来已完成。"
         if phase:
             base += f" 当前阶段：{phase}。"
+        elif preview:
+            base += " 已提取到最终输出摘要。"
         if preview:
             base += f" 最近输出：{preview}"
         return base
@@ -90,6 +92,8 @@ def render(payload):
         base = "OpenCode 进展：暂无显著变化，继续监控中。"
         if phase:
             base += f" 当前阶段：{phase}。"
+        elif status == "running":
+            base += " 当前仍处于运行中。"
         if count is not None:
             base += f" 连续 no-change 次数：{count}。"
         return base
