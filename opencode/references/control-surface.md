@@ -77,3 +77,12 @@ The following scripts remain valid internal implementation pieces, but the skill
 - `opencode_remote_cycle.py`
 
 Use them for debugging, targeted prototyping, or later refactoring—not as the first interface the skill agent must memorize.
+
+
+### Render a main-session update
+
+```bash
+python3 scripts/opencodectl.py render-update \
+  --input <cycle-output.json> \
+  [--quiet-when-empty]
+```

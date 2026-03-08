@@ -20,6 +20,7 @@ Keep the main session as the primary decision surface and the primary user-visib
 2. Read `references/control-inputs.md` when changing how user instructions affect execution.
 3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
 4. Read `references/control-surface.md` for the unified script entrypoint and the intended exposed control surface.
+5. Read `references/reporting-policy.md` when adjusting how decision results become concise visible updates in the main session.
 
 ## Use this skill for four kinds of work
 
@@ -92,13 +93,20 @@ For each decision opportunity, choose one of these broad outcomes:
 No-change still enters the decision layer.
 The question is not “did nothing happen?” but “does the user need a visible update or action now?”
 
-### Step 5: Keep heavy work as assistance, not as the narrative owner
+### Step 5: Render user-facing progress deliberately
+When a visible update is warranted, render a concise main-session message from the cycle payload instead of dumping raw state or raw API output.
+Prefer short, human-readable updates that mention:
+- current phase;
+- whether the task is running / blocked / failed / completed;
+- a short preview of recent meaningful output when available.
+
+### Step 6: Keep heavy work as assistance, not as the narrative owner
 Background workers or subagents may perform heavy work, but:
 - they should not become the primary decision center;
 - they should not own the user-facing narrative;
 - important results should flow back into the main session quickly.
 
-### Step 6: Keep the skill package clean
+### Step 7: Keep the skill package clean
 Put only runtime-relevant reusable material in the skill package:
 - `SKILL.md`
 - `references/`
@@ -111,13 +119,14 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 
 ### Primary exposed surface
 - `references/control-surface.md` — unified control surface and command patterns.
-- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, and remote cycle.
+- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, and visible update rendering.
 
 ### Supporting references
 - `references/execution-model.md` — system model and layer responsibilities.
 - `references/control-inputs.md` — how to interpret user input as control state.
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
 - `references/api-surface.md` — current known OpenCode API surface used by the prototypes.
+- `references/reporting-policy.md` — how decisions become concise visible main-session updates.
 
 ### Internal implementation scripts
 - `scripts/opencode_control_state.py` — local helper for iterating on state/control merges.
@@ -127,6 +136,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
 - `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
+- `scripts/opencode_render_update.py` — render a concise main-session progress message from cycle results.
 
 ## Packaging guidance
 

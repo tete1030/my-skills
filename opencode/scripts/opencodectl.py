@@ -77,6 +77,13 @@ def cmd_scenario(args) -> int:
         command.append("--write")
     return run_json("opencode_scenario.py", command)
 
+
+def cmd_render_update(args) -> int:
+    command = ["--input", args.input]
+    if args.quiet_when_empty:
+        command.append("--quiet-when-empty")
+    return run_json("opencode_render_update.py", command)
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes."
@@ -122,6 +129,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_sc.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_sc.add_argument("--write", action="store_true")
     p_sc.set_defaults(func=cmd_scenario)
+
+    p_ru = sub.add_parser("render-update", help="Render a concise main-session progress update from a cycle payload.")
+    p_ru.add_argument("--input", required=True)
+    p_ru.add_argument("--quiet-when-empty", action="store_true")
+    p_ru.set_defaults(func=cmd_render_update)
 
     return p
 
