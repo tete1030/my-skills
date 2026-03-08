@@ -1,8 +1,9 @@
-# OpenCode API Surface (working notes)
+# OpenCode API Surface
 
-This reference tracks the currently assumed OpenCode API surface used by the skill prototypes.
+This reference only tracks the remote API assumptions that matter to the current prototypes.
+Do not guess write/control endpoints unless they are verified.
 
-## Known read / observe endpoints
+## Known observe/read endpoints
 
 - `/doc`
 - `/session`
@@ -15,11 +16,11 @@ This reference tracks the currently assumed OpenCode API surface used by the ski
 - `/permission`
 - `/question`
 
-## Real payload shape notes from the read-only lab
+## Payload notes
 
-### Session list
+### `/session`
 
-`/session` returns a list of session summaries. Useful fields observed in practice:
+Useful fields observed in session summaries:
 
 - `id`
 - `slug`
@@ -30,64 +31,47 @@ This reference tracks the currently assumed OpenCode API surface used by the ski
 - `time.updated`
 - optional `permission`
 
-### Messages
+### `/session/{id}/message`
 
-`/session/{id}/message` returns a list of messages, not the older `{id, message: {content: ...}}` shape.
+Returns a list of messages.
+Normalize from `info.*` and `parts[]`, not from a synthetic top-level `message.content` shape.
 
-Observed message structure:
+Useful fields/variants observed:
 
-- `info.id` — canonical message id
-- `info.role` — usually `user` or `assistant`
+- `info.id`
+- `info.role`
 - `info.time.created`
 - optional `info.time.completed`
-- optional `info.finish` — e.g. `stop`, `tool-calls`
-- `parts[]` — ordered message parts
+- optional `info.finish`
+- `parts[]`
+  - `text`
+  - `tool`
+  - `reasoning`
+  - `step-start`
+  - `step-finish`
 
-Observed part variants:
+### `/session/{id}/todo`
 
-- `text` with `text`
-- `tool` with `tool` and `state.status` / `state.output`
-- `reasoning`
-- `step-start`
-- `step-finish`
-
-Implication: snapshot code should normalize from `info.*` and `parts[]`, not from a synthetic top-level `message.content` object.
-
-### Todo
-
-`/session/{id}/todo` currently returns a list of items shaped like:
+Observed todo item fields:
 
 - `content`
-- `status` (`completed`, `in_progress`, `pending` observed)
+- `status` (`completed`, `in_progress`, `pending`)
 - `priority`
 
-Implication: phase derivation should prefer:
-1. active / in-progress item;
-2. next pending item;
-3. latest completed item.
+Preferred phase derivation:
+
+1. active / in-progress item
+2. next pending item
+3. latest completed item
 
 Do not fall back to the first todo item when everything is already completed.
 
-## Usage principle
+## Normalized snapshot guidance
 
-Do not guess write/control endpoints unless they are verified.
+A `null` phase is not always a bug.
+Even when todo is empty, snapshots should still preserve useful state.
 
-For now, the skill should treat the OpenCode API layer primarily as:
-- an observation source;
-- a delta source;
-- a future integration boundary for control operations.
-
-## Current prototype direction
-
-Use the API layer to build compact snapshots that feed the main-session decision loop.
-
-## Normalization note
-
-A `null` phase is not always a bug. When todo is genuinely empty for a completed or running session, the correct normalized result may still be:
-- `phase = null`
-- but `status`, `latestTextPreview`, and `lastSeenMessageId` should remain useful.
-
-Recommended normalized snapshot fields:
+Recommended normalized fields:
 
 - `latestMessage.id`
 - `latestMessage.role`
