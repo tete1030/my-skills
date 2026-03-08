@@ -28,7 +28,8 @@ python3 scripts/opencodectl.py turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <fallback.txt>]
+  [--update-out <fallback.txt>] \
+  [--include-payload]
 ```
 
 This is the default high-level path for a single main-session turn:
@@ -57,6 +58,7 @@ Use lower-level commands only when debugging or testing a narrower layer.
 `--update-out` is optional and should be treated as a **fallback/debug artifact**.
 
 It exists for compatibility or inspection when you want a generic rendered sentence, but it is not the authoritative happy-path output.
+Use `--include-payload` only for explicit debugging; default turn output should stay compact.
 
 ## Supported commands
 
@@ -133,7 +135,8 @@ python3 scripts/opencodectl.py session-turn \
   [--origin-target <target>] \
   [--write] \
   [--payload-out <payload.json>] \
-  [--update-out <fallback.txt>]
+  [--update-out <fallback.txt>] \
+  [--include-payload]
 ```
 
 `session-turn` is an explicit alias for the same happy-path structured turn workflow.

@@ -71,7 +71,7 @@ def build_cadence(payload):
     }
 
 
-def build_turn_result(payload, control=None, origin_session=None, origin_target=None, fallback_text=None):
+def build_turn_result(payload, control=None, origin_session=None, origin_target=None, fallback_text=None, include_payload=False):
     fact_skeleton = build_fact_skeleton(payload)
     cadence = build_cadence(payload)
     delivery = {
@@ -79,17 +79,20 @@ def build_turn_result(payload, control=None, origin_session=None, origin_target=
         "originTarget": origin_target,
     }
     should_send = cadence.get("decision") == "visible_update"
-    return {
+    result = {
         "factSkeleton": fact_skeleton,
         "shouldSend": should_send,
         "delivery": delivery,
         "cadence": cadence,
         "control": control,
-        "fallback": {
-            "renderedUpdate": fallback_text or None,
-        },
-        "payload": payload,
     }
+    if fallback_text is not None:
+        result["fallback"] = {
+            "renderedUpdate": fallback_text or None,
+        }
+    if include_payload:
+        result["payload"] = payload
+    return result
 
 
 def maybe_render_fallback(payload, quiet_when_empty=False):
@@ -123,6 +126,7 @@ def main() -> None:
     p.add_argument("--payload-out")
     p.add_argument("--update-out")
     p.add_argument("--quiet-when-empty", action="store_true")
+    p.add_argument("--include-payload", action="store_true")
     args = p.parse_args()
 
     cycle_args = [
@@ -159,6 +163,7 @@ def main() -> None:
             origin_session=args.origin_session,
             origin_target=args.origin_target,
             fallback_text=fallback_text,
+            include_payload=args.include_payload,
         ),
         ensure_ascii=False,
         indent=2,

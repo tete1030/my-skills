@@ -28,8 +28,8 @@ class TurnOutputTests(unittest.TestCase):
         result = build_turn_result(
             payload,
             control={"executionMode": "main_session_centered"},
-            origin_session="agent:main:telegram:group:-1003607560565:topic:3348",
-            origin_target="telegram:-1003607560565:topic:3348",
+            origin_session="origin-session-example",
+            origin_target="origin-target-example",
         )
 
         self.assertEqual(result["factSkeleton"]["status"], "running")
@@ -37,11 +37,11 @@ class TurnOutputTests(unittest.TestCase):
         self.assertIn("Released v0.3.4 successfully", result["factSkeleton"]["latestMeaningfulPreview"])
         self.assertEqual(result["factSkeleton"]["reason"], "state_changed")
         self.assertTrue(result["shouldSend"])
-        self.assertEqual(result["delivery"]["originSession"], "agent:main:telegram:group:-1003607560565:topic:3348")
-        self.assertEqual(result["delivery"]["originTarget"], "telegram:-1003607560565:topic:3348")
+        self.assertEqual(result["delivery"]["originSession"], "origin-session-example")
+        self.assertEqual(result["delivery"]["originTarget"], "origin-target-example")
         self.assertEqual(result["cadence"]["decision"], "visible_update")
         self.assertFalse(result["cadence"]["noChange"])
-        self.assertIsNone(result["fallback"]["renderedUpdate"])
+        self.assertNotIn("fallback", result)
 
     def test_turn_result_keeps_silent_cadence_without_send(self):
         payload = {
@@ -56,7 +56,7 @@ class TurnOutputTests(unittest.TestCase):
             "snapshot": {"latestMessage": {}},
         }
 
-        result = build_turn_result(payload, origin_session="agent:main:telegram:group:-1003607560565:topic:3348")
+        result = build_turn_result(payload, origin_session="origin-session-example")
 
         self.assertFalse(result["shouldSend"])
         self.assertEqual(result["factSkeleton"]["status"], "running")

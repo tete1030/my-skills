@@ -81,3 +81,10 @@ Use it when:
 - maintaining compatibility with older experiments.
 
 Do **not** treat fallback rendered text as the authoritative main-session explanation.
+
+## Optional debug-only fields
+
+The happy path should not require raw payloads.
+If deeper inspection is needed, include raw payload only in explicit debug flows, not by default in every turn result.
+
+Likewise, fallback rendered text should only appear when a caller explicitly asks for it (for example via a debug or compatibility path).

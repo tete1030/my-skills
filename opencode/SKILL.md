@@ -54,7 +54,7 @@ Default to the unified entrypoint:
 Treat `opencodectl.py turn` as the **primary happy path** for real operation.
 Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final result envelope.
 When available, pass origin delivery metadata so updates are routed back to the original task-initiating session rather than the current execution context.
-Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`. Use `render-update` only when you explicitly need a fallback/debug sentence.
+Use lower-level commands only when debugging or refining internals. For turn-level debugging, prefer `opencodectl.py explain-turn`. Use `render-update` only when you explicitly need a fallback/debug sentence, and use raw payload output only in explicit debug flows.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.

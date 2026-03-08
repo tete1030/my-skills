@@ -60,10 +60,6 @@ def cmd_remote_cycle(args) -> int:
     ]
     if args.control:
         command += ["--control", args.control]
-    if args.origin_session:
-        command += ["--origin-session", args.origin_session]
-    if args.origin_target:
-        command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -88,6 +84,8 @@ def cmd_render_update(args) -> int:
     command = ["--input", args.input]
     if args.quiet_when_empty:
         command.append("--quiet-when-empty")
+    if args.include_payload:
+        command.append("--include-payload")
     return run_json("opencode_render_update.py", command)
 
 
@@ -102,10 +100,6 @@ def cmd_session_turn(args) -> int:
     ]
     if args.control:
         command += ["--control", args.control]
-    if args.origin_session:
-        command += ["--origin-session", args.origin_session]
-    if args.origin_target:
-        command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
     if args.write:
@@ -116,6 +110,8 @@ def cmd_session_turn(args) -> int:
         command += ["--update-out", args.update_out]
     if args.quiet_when_empty:
         command.append("--quiet-when-empty")
+    if args.include_payload:
+        command.append("--include-payload")
     return run_json("opencode_session_turn.py", command)
 
 
@@ -159,8 +155,6 @@ def build_parser() -> argparse.ArgumentParser:
     p_rc.add_argument("--session-id", required=True)
     p_rc.add_argument("--state", required=True)
     p_rc.add_argument("--control")
-    p_rc.add_argument("--origin-session")
-    p_rc.add_argument("--origin-target")
     p_rc.add_argument("--token")
     p_rc.add_argument("--timeout", type=int, default=20)
     p_rc.add_argument("--message-limit", type=int, default=10)
@@ -195,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_turn.add_argument("--payload-out")
     p_turn.add_argument("--update-out")
     p_turn.add_argument("--quiet-when-empty", action="store_true")
+    p_turn.add_argument("--include-payload", action="store_true")
     p_turn.set_defaults(func=cmd_session_turn)
 
     p_st = sub.add_parser("session-turn", help="Explicit name for the same happy-path structured turn workflow.")
@@ -212,6 +207,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_st.add_argument("--payload-out")
     p_st.add_argument("--update-out")
     p_st.add_argument("--quiet-when-empty", action="store_true")
+    p_st.add_argument("--include-payload", action="store_true")
     p_st.set_defaults(func=cmd_session_turn)
 
     p_et = sub.add_parser("explain-turn", help="Explain a structured turn result in compact debug form.")
