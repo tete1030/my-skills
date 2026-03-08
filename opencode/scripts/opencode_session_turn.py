@@ -54,10 +54,6 @@ def main() -> None:
     ]
     if args.control:
         cycle_args += ["--control", args.control]
-    if args.origin_session:
-        cycle_args += ["--origin-session", args.origin_session]
-    if args.origin_target:
-        cycle_args += ["--origin-target", args.origin_target]
     if args.token:
         cycle_args += ["--token", args.token]
     if args.write:
