@@ -53,6 +53,7 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertEqual(plan["gatewayMethod"], "agent")
         self.assertEqual(plan["gatewayParams"]["sessionKey"], plan["sessionKey"])
         self.assertTrue(plan["gatewayParams"]["deliver"])
+        self.assertTrue(plan["gatewayParams"]["idempotencyKey"].startswith("opencode-origin-handoff-"))
         self.assertIn("OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1", plan["gatewayParams"]["message"])
         self.assertEqual(plan["argv"][:4], ["openclaw", "gateway", "call", "agent"])
         self.assertIn("--timeout", plan["argv"])

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import shlex
 import subprocess
@@ -61,6 +62,11 @@ def assert_agent_call_boundary(result: dict) -> dict:
     return result
 
 
+def build_idempotency_key(session_key: str, system_event_text: str) -> str:
+    digest = hashlib.sha256(f"{session_key}\n{system_event_text}".encode("utf-8")).hexdigest()
+    return f"opencode-origin-handoff-{digest[:32]}"
+
+
 def build_gateway_agent_call(
     handoff: dict,
     *,
@@ -111,6 +117,7 @@ def build_gateway_agent_call(
         "sessionKey": session_key,
         "message": build_agent_message(system_event_text),
         "deliver": True,
+        "idempotencyKey": build_idempotency_key(session_key, system_event_text),
     }
     argv = [
         "openclaw",
