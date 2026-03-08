@@ -141,6 +141,40 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["style"], "brief_blocker")
         self.assertEqual(result["facts"]["latestMeaningfulPreview"], "Need user confirmation before deploy.")
 
+    def test_completed_no_change_stays_completion_not_heartbeat(self):
+        turn_result = {
+            "factSkeleton": {
+                "status": "completed",
+                "phase": None,
+                "latestMeaningfulPreview": "Validated final output and wrapped up the task.",
+                "reason": "status=completed",
+            },
+            "shouldSend": True,
+            "delivery": {
+                "originSession": "origin-session-example",
+                "originTarget": "origin-target-example",
+            },
+            "cadence": {
+                "decision": "visible_update",
+                "noChange": True,
+                "consecutiveNoChangeCount": 6,
+                "lastVisibleUpdateAt": "2026-03-08T11:02:30.059865+00:00",
+            },
+        }
+
+        result = build_agent_turn_input(turn_result)
+
+        self.assertEqual(result["updateType"], "completed")
+        self.assertEqual(result["style"], "brief_completion")
+        self.assertEqual(
+            result["facts"],
+            {
+                "status": "completed",
+                "latestMeaningfulPreview": "Validated final output and wrapped up the task.",
+            },
+        )
+        self.assertTrue(result["routing"]["mustPreserveOrigin"])
+
     def test_agent_turn_input_schema_stays_inside_boundary(self):
         turn_result = {
             "factSkeleton": {
