@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+import argparse
+import json
+import subprocess
+import sys
+from pathlib import Path
+
+SCRIPT_DIR = Path(__file__).resolve().parent
+PY = sys.executable
+
+
+def run_json(script_name: str, args: list[str]) -> int:
+    script = SCRIPT_DIR / script_name
+    proc = subprocess.run([PY, str(script), *args], capture_output=True, text=True)
+    if proc.returncode != 0:
+        if proc.stdout:
+            print(proc.stdout, end="", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr, end="", file=sys.stderr)
+        return proc.returncode
+    if proc.stdout:
+        print(proc.stdout, end="")
+    return 0
+
+
+def cmd_state_init(args) -> int:
+    return run_json("opencode_control_state.py", ["init", "--state", args.state])
+
+
+def cmd_state_show(args) -> int:
+    return run_json("opencode_control_state.py", ["show", "--state", args.state])
+
+
+def cmd_cycle(args) -> int:
+    command = ["--state", args.state]
+    if args.control:
+        command += ["--control", args.control]
+    if args.observation:
+        command += ["--observation", args.observation]
+    command += ["--no-change-visible-after-min", str(args.no_change_visible_after_min)]
+    if args.write:
+        command.append("--write")
+    return run_json("opencode_cycle.py", command)
+
+
+def cmd_snapshot(args) -> int:
+    command = ["--base-url", args.base_url, "--session-id", args.session_id]
+    if args.token:
+        command += ["--token", args.token]
+    command += ["--timeout", str(args.timeout)]
+    return run_json("opencode_snapshot.py", command)
+
+
+def cmd_remote_cycle(args) -> int:
+    command = [
+        "--base-url", args.base_url,
+        "--session-id", args.session_id,
+        "--state", args.state,
+        "--no-change-visible-after-min", str(args.no_change_visible_after_min),
+    ]
+    if args.token:
+        command += ["--token", args.token]
+    command += ["--timeout", str(args.timeout)]
+    if args.write:
+        command.append("--write")
+    return run_json("opencode_remote_cycle.py", command)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    p = argparse.ArgumentParser(
+        description="Unified control surface for the opencode skill prototypes."
+    )
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    p_init = sub.add_parser("state-init", help="Initialize local shared state.")
+    p_init.add_argument("--state", required=True)
+    p_init.set_defaults(func=cmd_state_init)
+
+    p_show = sub.add_parser("state-show", help="Show local shared state.")
+    p_show.add_argument("--state", required=True)
+    p_show.set_defaults(func=cmd_state_show)
+
+    p_cycle = sub.add_parser("cycle", help="Run one local control + observation + decision cycle.")
+    p_cycle.add_argument("--state", required=True)
+    p_cycle.add_argument("--control")
+    p_cycle.add_argument("--observation")
+    p_cycle.add_argument("--no-change-visible-after-min", type=int, default=30)
+    p_cycle.add_argument("--write", action="store_true")
+    p_cycle.set_defaults(func=cmd_cycle)
+
+    p_snap = sub.add_parser("snapshot", help="Fetch a compact remote OpenCode snapshot.")
+    p_snap.add_argument("--base-url", required=True)
+    p_snap.add_argument("--session-id", required=True)
+    p_snap.add_argument("--token")
+    p_snap.add_argument("--timeout", type=int, default=20)
+    p_snap.set_defaults(func=cmd_snapshot)
+
+    p_rc = sub.add_parser("remote-cycle", help="Fetch remote state and run one decision cycle.")
+    p_rc.add_argument("--base-url", required=True)
+    p_rc.add_argument("--session-id", required=True)
+    p_rc.add_argument("--state", required=True)
+    p_rc.add_argument("--token")
+    p_rc.add_argument("--timeout", type=int, default=20)
+    p_rc.add_argument("--no-change-visible-after-min", type=int, default=30)
+    p_rc.add_argument("--write", action="store_true")
+    p_rc.set_defaults(func=cmd_remote_cycle)
+
+    return p
+
+
+def main() -> int:
+    parser = build_parser()
+    args = parser.parse_args()
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
