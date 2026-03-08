@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import re
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from opencode_api_client import OpenCodeClient
@@ -11,6 +12,75 @@ COMPLETED_TODO_STATUSES = {"completed", "done", "finished", "closed", "resolved"
 FAILED_MESSAGE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"}
 RUNNING_TOOL_STATUSES = {"queued", "pending", "running", "active", "started", "in_progress"}
 COMPLETED_TOOL_STATUSES = {"completed", "done", "finished", "succeeded", "success", "ok"}
+
+
+
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+HEXISH_RE = re.compile(r"^[0-9a-f]{7,}$", re.IGNORECASE)
+
+
+def strip_ansi(value: str) -> str:
+    return ANSI_RE.sub("", value)
+
+
+def preview_segments(value: Any) -> List[str]:
+    if value is None:
+        return []
+    text = strip_ansi(str(value)).replace("\r", "\n")
+    raw_parts: List[str] = []
+    for chunk in text.split("\n"):
+        raw_parts.extend(chunk.split(" --- "))
+    parts = []
+    for part in raw_parts:
+        cleaned = " ".join(part.split()).strip()
+        if cleaned:
+            parts.append(cleaned)
+    return parts
+
+
+def is_noise_segment(segment: str) -> bool:
+    s = segment.strip()
+    low = s.lower()
+    if not s:
+        return True
+    if low.startswith("pwd=") or low.startswith("cwd="):
+        return True
+    if low.startswith("assistant to=") or low.startswith("tool to="):
+        return True
+    if "functions.process" in low or "commentary to=" in low:
+        return True
+    if HEXISH_RE.match(s):
+        return True
+    if len(s) < 3:
+        return True
+    return False
+
+
+def score_segment(segment: str) -> tuple[int, int]:
+    s = segment.strip()
+    low = s.lower()
+    score = 0
+    keywords = ["done", "completed", "released", "success", "succeeded", "passed", "fixed", "failed", "blocked", "summary", "result"]
+    if any(k in low for k in keywords):
+        score += 5
+    if any(ch.isalpha() for ch in s):
+        score += 2
+    if " " in s:
+        score += 1
+    if len(s) > 100:
+        score -= 1
+    if low.startswith("cloning into") or low.startswith("return exactly") or low.startswith("assistant to="):
+        score -= 2
+    return (score, -len(s))
+
+
+def clean_preview(value: Any, limit: int = 200) -> Optional[str]:
+    segments = [seg for seg in preview_segments(value) if not is_noise_segment(seg)]
+    if not segments:
+        return truncate_text(value, limit=limit)
+    best = sorted(segments, key=score_segment, reverse=True)[:2]
+    text = " | ".join(best)
+    return truncate_text(text, limit=limit)
 
 
 def truncate_text(value: Any, limit: int = 200) -> Optional[str]:
@@ -79,7 +149,7 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
         if part_type:
             part_types.append(part_type)
         if part_type == "text":
-            preview = truncate_text(part.get("text"))
+            preview = clean_preview(part.get("text"))
             if preview:
                 last_text_preview = preview
         elif part_type == "tool":
@@ -90,7 +160,7 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
             tool_status = str(tool_state.get("status") or "").strip().lower()
             if tool_status:
                 tool_statuses.append(tool_status)
-            preview = truncate_text(tool_state.get("output") or get_nested(tool_state, "metadata", "output"))
+            preview = clean_preview(tool_state.get("output") or get_nested(tool_state, "metadata", "output"))
             if preview:
                 last_tool_output_preview = preview
         elif part_type == "step-finish" and not finish:
