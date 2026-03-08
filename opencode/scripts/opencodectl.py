@@ -60,6 +60,10 @@ def cmd_remote_cycle(args) -> int:
     ]
     if args.control:
         command += ["--control", args.control]
+    if args.origin_session:
+        command += ["--origin-session", args.origin_session]
+    if args.origin_target:
+        command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -93,6 +97,10 @@ def cmd_session_turn(args) -> int:
     ]
     if args.control:
         command += ["--control", args.control]
+    if args.origin_session:
+        command += ["--origin-session", args.origin_session]
+    if args.origin_target:
+        command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
     if args.write:
