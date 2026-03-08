@@ -11,7 +11,6 @@ from opencode_delivery_handoff import (  # noqa: E402
     ALLOWED_OPENCLAW_DELIVERY_KEYS,
     ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS,
     ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS,
-    ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS,
     SYSTEM_EVENT_TEXT_HEADER,
     build_delivery_handoff,
 )
@@ -53,20 +52,11 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertTrue(result["openclawDelivery"]["dryRun"])
         self.assertTrue(result["openclawDelivery"]["requiresNarrative"])
         self.assertEqual(result["openclawDelivery"]["primaryDelivery"], "origin_session_system_event")
-        self.assertEqual(result["openclawDelivery"]["cronFallback"], "watchdog_only")
         self.assertEqual(result["updateType"], "progress")
         self.assertEqual(result["routing"]["originSession"], "origin-session-example")
         self.assertEqual(
             result["openclawDelivery"]["systemEventTemplate"]["sessionKey"],
             "origin-session-example",
-        )
-        self.assertEqual(
-            result["openclawDelivery"]["watchdogCronTemplate"],
-            {
-                "sessionTarget": "main",
-                "sessionKey": "origin-session-example",
-                "payload": result["openclawDelivery"]["systemEventTemplate"]["payload"],
-            },
         )
 
         payload = result["openclawDelivery"]["systemEventTemplate"]["payload"]
@@ -76,7 +66,6 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(envelope["kind"], "opencode_origin_session_handoff")
         self.assertEqual(envelope["deliveryPolicy"], {
             "primary": "origin_session_system_event",
-            "cronFallback": "watchdog_only",
         })
         self.assertEqual(envelope["agentInput"]["routing"]["originSession"], "origin-session-example")
         self.assertEqual(envelope["agentInput"]["updateType"], "progress")
@@ -142,7 +131,6 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["routeStatus"], "missing_origin_session")
         self.assertEqual(result["openclawDelivery"]["reason"], "origin_session_required")
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
-        self.assertIsNone(result["openclawDelivery"]["watchdogCronTemplate"])
 
     def test_conflicting_origin_routes_hold_without_rewriting(self):
         turn_result = {
@@ -171,7 +159,6 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["routeStatus"], "conflict")
         self.assertEqual(result["openclawDelivery"]["reason"], "origin_route_conflict")
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
-        self.assertIsNone(result["openclawDelivery"]["watchdogCronTemplate"])
         self.assertEqual(result["routing"]["originTarget"], "telegram:conflicting-target:topic:other-thread")
 
     def test_silent_turn_stays_skip_and_never_builds_templates(self):
@@ -202,7 +189,6 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["reason"], "should_not_send")
         self.assertFalse(result["openclawDelivery"]["requiresNarrative"])
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
-        self.assertIsNone(result["openclawDelivery"]["watchdogCronTemplate"])
 
     def test_delivery_handoff_schema_stays_mechanical(self):
         result = build_delivery_handoff(self.ready_turn())
@@ -212,10 +198,6 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(
             set(result["openclawDelivery"]["systemEventTemplate"]),
             ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS,
-        )
-        self.assertEqual(
-            set(result["openclawDelivery"]["watchdogCronTemplate"]),
-            ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS,
         )
         for forbidden_key in ["message", "replyText", "plan", "strategy", "headline", "summary", "toolRequestTemplate"]:
             self.assertNotIn(forbidden_key, result)

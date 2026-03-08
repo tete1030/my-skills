@@ -8,7 +8,6 @@ Keep the runtime model small:
 - cadence decides whether this turn should surface or stay silent;
 - delivery metadata points back to the original task-initiating session;
 - origin-session `systemEvent` injection is the primary consumption path;
-- cron is only a watchdog/safety-net layer.
 
 ## Default model
 
@@ -91,10 +90,8 @@ Primary consumption path:
 Cross-check / fallback only:
 
 - use `delivery.originTarget` only to validate the preserved route or support explicit downstream tooling
-- use cron only as watchdog/fallback re-injection of the same structured `systemEvent`
 
 Do not silently replace origin routing with the current lab/debug/helper context.
-Do not treat cron as the normal consumer.
 
 ## Background work
 

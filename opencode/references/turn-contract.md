@@ -129,7 +129,6 @@ Allowed behavior:
 - accept a legacy `agent-turn-input` object without changing its behavior
 - add `openclawDelivery`
 - resolve origin routing into an origin-session `systemEvent` template when safe
-- emit a watchdog-only cron fallback template using the same structured system event
 - hold on missing/conflicting origin routing instead of silently rewriting
 - stay dry-run by default
 
@@ -163,9 +162,6 @@ Primary delivery path:
 The injected `systemEvent` already carries the compact mechanical handoff object.
 No separate script consumer is required on the happy path.
 
-Fallback only:
-
-`openclawDelivery.watchdogCronTemplate -> low-frequency watchdog or safety-net re-injection`
 
 ## Debug path
 

@@ -23,15 +23,12 @@ ALLOWED_OPENCLAW_DELIVERY_KEYS = frozenset({
     "preserveOrigin",
     "requiresNarrative",
     "primaryDelivery",
-    "cronFallback",
     "systemEventTemplate",
-    "watchdogCronTemplate",
 })
 ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS = frozenset({"sessionKey", "payload"})
-ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS = frozenset({"sessionTarget", "sessionKey", "payload"})
 ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS = frozenset({"kind", "text"})
 ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy"})
-ALLOWED_DELIVERY_POLICY_KEYS = frozenset({"primary", "cronFallback"})
+ALLOWED_DELIVERY_POLICY_KEYS = frozenset({"primary"})
 SYSTEM_EVENT_TEXT_HEADER = "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1"
 ROUTE_SENTINELS = {"topic", "thread"}
 SESSION_TARGET_KEYS = ("group", "chat", "user", "dm", "target")
@@ -131,7 +128,6 @@ def build_system_event_envelope(agent_input: dict):
         "agentInput": base,
         "deliveryPolicy": {
             "primary": "origin_session_system_event",
-            "cronFallback": "watchdog_only",
         },
     }
     return assert_system_event_envelope_boundary(envelope)
@@ -224,16 +220,6 @@ def build_system_event_template(session_key: str, text: str):
     }
 
 
-def build_watchdog_cron_template(session_key: str, text: str):
-    return {
-        "sessionTarget": "main",
-        "sessionKey": session_key,
-        "payload": {
-            "kind": "systemEvent",
-            "text": text,
-        },
-    }
-
 
 def assert_handoff_boundary(result: dict) -> dict:
     keys = set(result)
@@ -270,16 +256,6 @@ def assert_handoff_boundary(result: dict) -> dict:
             )
         assert_system_event_payload_boundary(system_event["payload"])
 
-    watchdog = result["openclawDelivery"]["watchdogCronTemplate"]
-    if watchdog is not None:
-        template_keys = set(watchdog)
-        if template_keys != ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS:
-            raise ValueError(
-                "delivery-handoff boundary violation: unexpected watchdogCronTemplate keys "
-                f"{sorted(template_keys - ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS)}"
-            )
-        assert_system_event_payload_boundary(watchdog["payload"])
-
     return result
 
 
@@ -290,12 +266,10 @@ def build_delivery_handoff(data: dict, dry_run: bool = True):
     should_send = bool(base.get("shouldSend"))
 
     system_event_template = None
-    watchdog_cron_template = None
     if should_send and route["routeStatus"] == "ready":
         envelope = build_system_event_envelope(base)
         text = encode_system_event_text(envelope)
         system_event_template = build_system_event_template(route["sessionKey"], text)
-        watchdog_cron_template = build_watchdog_cron_template(route["sessionKey"], text)
         delivery_action = "inject"
         reason = route["reason"]
     elif should_send:
@@ -317,9 +291,7 @@ def build_delivery_handoff(data: dict, dry_run: bool = True):
             "preserveOrigin": bool(routing.get("mustPreserveOrigin")),
             "requiresNarrative": should_send,
             "primaryDelivery": "origin_session_system_event",
-            "cronFallback": "watchdog_only",
             "systemEventTemplate": system_event_template,
-            "watchdogCronTemplate": watchdog_cron_template,
         },
     }
     return assert_handoff_boundary(result)

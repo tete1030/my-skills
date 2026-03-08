@@ -23,7 +23,6 @@ Keep this skill centered on one idea:
 - Let scripts emit **facts + cadence + origin routing**.
 - Do **not** let scripts emit final chat prose, plans, strategy trees, or rewritten delivery.
 - Keep origin-session preservation explicit.
-- Treat cron as **watchdog/fallback only**, not as the normal consumption path.
 - Keep environment-specific details out of the skill package.
 
 ## Read order
