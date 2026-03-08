@@ -228,12 +228,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_ati.set_defaults(func=cmd_agent_turn_input)
 
     p_dh = sub.add_parser("delivery-handoff", help="Resolve a structured turn result (preferred) or compact agent input into an origin-session delivery handoff without authoring user-facing text.")
-    p_dh.add_argument("--input", required=True)
+    p_dh.add_argument("--input", required=True, help="JSON file path or '-' for stdin")
     p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not inject or send messages")
     p_dh.set_defaults(func=cmd_delivery_handoff)
 
     p_oac = sub.add_parser("openclaw-agent-call", help="Build or execute a safe openclaw gateway call agent command from a delivery-handoff result. Dry-run by default.")
-    p_oac.add_argument("--input", required=True)
+    p_oac.add_argument("--input", required=True, help="delivery-handoff JSON path or '-' for stdin")
     p_oac.add_argument("--execute", action="store_true")
     p_oac.add_argument("--allow-handoff-dry-run", action="store_true")
     p_oac.add_argument("--expect-final", action="store_true")

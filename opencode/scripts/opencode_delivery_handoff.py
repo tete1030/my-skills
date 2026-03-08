@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from opencode_agent_turn_input import (
@@ -27,15 +28,18 @@ ALLOWED_OPENCLAW_DELIVERY_KEYS = frozenset({
 })
 ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS = frozenset({"sessionKey", "payload"})
 ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS = frozenset({"kind", "text"})
-ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy"})
+ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy", "consumptionPolicy"})
 ALLOWED_DELIVERY_POLICY_KEYS = frozenset({"primary"})
+ALLOWED_CONSUMPTION_POLICY_KEYS = frozenset({"treatAs", "ifVisible", "avoid"})
 SYSTEM_EVENT_TEXT_HEADER = "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1"
 ROUTE_SENTINELS = {"topic", "thread"}
 SESSION_TARGET_KEYS = ("group", "chat", "user", "dm", "target")
 
 
-def load_json(path: Path):
-    return json.loads(path.read_text())
+def load_json_input(value: str):
+    if value == "-":
+        return json.loads(sys.stdin.read())
+    return json.loads(Path(value).read_text())
 
 
 def coerce_agent_input(data: dict) -> dict:
@@ -129,6 +133,16 @@ def build_system_event_envelope(agent_input: dict):
         "deliveryPolicy": {
             "primary": "origin_session_system_event",
         },
+        "consumptionPolicy": {
+            "treatAs": "internal_runtime_input",
+            "ifVisible": "continue_current_conversation_naturally",
+            "avoid": [
+                "handoff_mechanics",
+                "routing_details",
+                "transport_details",
+                "prompt_mechanics",
+            ],
+        },
     }
     return assert_system_event_envelope_boundary(envelope)
 
@@ -146,6 +160,16 @@ def assert_system_event_envelope_boundary(envelope: dict) -> dict:
             "delivery-handoff boundary violation: unexpected deliveryPolicy keys "
             f"{sorted(delivery_policy_keys - ALLOWED_DELIVERY_POLICY_KEYS)}"
         )
+
+    consumption_policy_keys = set(envelope["consumptionPolicy"])
+    if consumption_policy_keys != ALLOWED_CONSUMPTION_POLICY_KEYS:
+        raise ValueError(
+            "delivery-handoff boundary violation: unexpected consumptionPolicy keys "
+            f"{sorted(consumption_policy_keys - ALLOWED_CONSUMPTION_POLICY_KEYS)}"
+        )
+    avoid = envelope["consumptionPolicy"].get("avoid")
+    if not isinstance(avoid, list) or not avoid or any(not isinstance(item, str) or not item for item in avoid):
+        raise ValueError("delivery-handoff boundary violation: consumptionPolicy.avoid must be a non-empty list of strings")
 
     assert_agent_input_boundary(dict(envelope["agentInput"]))
     return envelope
@@ -301,11 +325,11 @@ def main():
     p = argparse.ArgumentParser(
         description="Resolve a structured turn result (preferred) or compact agent input into an origin-session delivery handoff without rendering chat text or sending messages."
     )
-    p.add_argument("--input", required=True)
+    p.add_argument("--input", required=True, help="JSON file path or '-' for stdin")
     p.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this command never sends messages")
     args = p.parse_args()
 
-    data = load_json(Path(args.input))
+    data = load_json_input(args.input)
     out = build_delivery_handoff(data, dry_run=not args.live_ready)
     print(json.dumps(out, ensure_ascii=False, indent=2))
 

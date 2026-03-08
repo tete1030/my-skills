@@ -47,11 +47,18 @@ python3 scripts/opencodectl.py delivery-handoff \
 It still does **not** inject anything.
 Use it when a downstream bridge is allowed to execute the prepared delivery path.
 
-Example live path:
+Example live path with temp files:
 
 ```bash
 python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json> --live-ready > handoff.json
 python3 scripts/opencodectl.py openclaw-agent-call --input handoff.json --execute
+```
+
+Tighter CLI path with no temp file:
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json> --live-ready \
+  | python3 scripts/opencodectl.py openclaw-agent-call --input - --execute
 ```
 
 ## Input expectation
@@ -139,6 +146,7 @@ It carries:
 
 - the compact main-agent input
 - the explicit delivery policy (`primary=origin_session_system_event`)
+- a compact consumption policy that tells the main-session agent to treat the payload as internal runtime input and, if it replies visibly, continue the conversation naturally instead of talking about handoff mechanics
 
 This is intentionally **not user-facing prose**.
 The bridge may forward it as the body of an `openclaw gateway call agent` request, but that does not change ownership: the originating main-session agent still decides whether/how to explain it to the user.

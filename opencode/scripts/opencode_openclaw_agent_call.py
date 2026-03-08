@@ -4,6 +4,7 @@ import hashlib
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Callable
 
@@ -28,16 +29,21 @@ ALLOWED_EXECUTION_KEYS = frozenset({"returncode", "stdout", "stderr"})
 AGENT_CALL_KIND = "openclaw_gateway_agent_call_v1"
 
 
-def load_json(path: Path):
-    return json.loads(path.read_text())
+def load_json_input(value: str):
+    if value == "-":
+        return json.loads(sys.stdin.read())
+    return json.loads(Path(value).read_text())
 
 
 def build_agent_message(system_event_text: str) -> str:
-    decode_system_event_text(system_event_text)
+    envelope = decode_system_event_text(system_event_text)
+    consumption = envelope["consumptionPolicy"]
+    avoid = ", ".join(item.replace("_", " ") for item in consumption["avoid"])
     return (
-        "OpenClaw internal handoff for the originating session.\n"
-        "Treat the structured payload below as mechanical runtime input.\n"
-        "Preserve the origin routing and own any visible user-facing explanation.\n\n"
+        "Runtime task update for the current conversation.\n"
+        f"Treat the payload below as {consumption['treatAs'].replace('_', ' ')}.\n"
+        "If you reply visibly, continue the task conversation naturally for the user.\n"
+        f"Avoid mentioning {avoid} unless the user explicitly asks.\n\n"
         + system_event_text
     )
 
@@ -192,7 +198,7 @@ def main():
     p = argparse.ArgumentParser(
         description="Build or execute an OpenClaw CLI gateway agent call from a delivery-handoff result while preserving origin-session routing. Dry-run by default."
     )
-    p.add_argument("--input", required=True, help="delivery-handoff JSON file")
+    p.add_argument("--input", required=True, help="delivery-handoff JSON file or '-' for stdin")
     p.add_argument("--execute", action="store_true", help="execute the generated openclaw gateway call agent command")
     p.add_argument(
         "--allow-handoff-dry-run",
@@ -203,7 +209,7 @@ def main():
     p.add_argument("--timeout-ms", type=int, default=10_000)
     args = p.parse_args()
 
-    handoff = load_json(Path(args.input))
+    handoff = load_json_input(args.input)
     plan = build_gateway_agent_call(handoff, timeout_ms=args.timeout_ms, expect_final=args.expect_final)
     if args.execute:
         plan = execute_gateway_agent_call(

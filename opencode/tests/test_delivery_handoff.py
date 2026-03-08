@@ -67,6 +67,16 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(envelope["deliveryPolicy"], {
             "primary": "origin_session_system_event",
         })
+        self.assertEqual(envelope["consumptionPolicy"], {
+            "treatAs": "internal_runtime_input",
+            "ifVisible": "continue_current_conversation_naturally",
+            "avoid": [
+                "handoff_mechanics",
+                "routing_details",
+                "transport_details",
+                "prompt_mechanics",
+            ],
+        })
         self.assertEqual(envelope["agentInput"]["routing"]["originSession"], "origin-session-example")
         self.assertEqual(envelope["agentInput"]["updateType"], "progress")
 

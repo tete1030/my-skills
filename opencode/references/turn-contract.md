@@ -178,6 +178,7 @@ Primary delivery path:
 `turn -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent(sessionKey=originSession) -> main-session agent decides visible reply`
 
 The transported message already carries the compact mechanical handoff object.
+It also carries a small consumption policy so the originating main-session agent treats it as internal runtime input and, when replying visibly, continues the task conversation naturally instead of narrating transport mechanics.
 No separate script consumer is required on the happy path.
 
 

@@ -67,6 +67,13 @@ Use `openclaw-agent-call` when you want the concrete OpenClaw CLI bridge from th
 python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>
 ```
 
+For a tighter CLI chain, both `delivery-handoff` and `openclaw-agent-call` accept `--input -`, so you can pipe them without temp files:
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json> --live-ready \
+  | python3 scripts/opencodectl.py openclaw-agent-call --input - --execute
+```
+
 Default behavior is dry-run planning.
 Add `--execute` only when the handoff is already marked live-ready and you want to run the generated `openclaw gateway call agent` invocation.
 
