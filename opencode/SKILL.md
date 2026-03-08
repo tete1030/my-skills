@@ -42,7 +42,9 @@ Use this skill to decide:
 Use:
 - `scripts/opencode_control_state.py` to prototype control-state and observation merges;
 - `scripts/opencode_decision_gate.py` to prototype visible-update / no-change gating decisions;
-- `scripts/opencode_cycle.py` to simulate one full control + trigger + decision cycle.
+- `scripts/opencode_cycle.py` to simulate one full control + trigger + decision cycle;
+- `scripts/opencode_api_client.py` to query the known OpenCode API surface;
+- `scripts/opencode_snapshot.py` to build compact remote-state snapshots for the main-session decision loop.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -111,9 +113,12 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `references/execution-model.md` — system model and layer responsibilities.
 - `references/control-inputs.md` — how to interpret user input as control state.
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
+- `references/api-surface.md` — current known OpenCode API surface used by the prototypes.
 - `scripts/opencode_control_state.py` — local helper for iterating on state/control merges.
 - `scripts/opencode_decision_gate.py` — local helper for prototyping visible-update gating and no-change cadence behavior.
 - `scripts/opencode_cycle.py` — single-cycle prototype that merges control input, observation input, and visible-update decisions into one experiment flow.
+- `scripts/opencode_api_client.py` — minimal OpenCode API client for session/status/todo/question/permission access.
+- `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
 
 ## Packaging guidance
 
