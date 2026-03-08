@@ -4,7 +4,7 @@ The happy path is:
 
 1. `turn` produces a small, mechanical result.
 2. `agent-turn-input` optionally adapts that result into compact main-agent guidance.
-3. `delivery-handoff` optionally resolves origin routing into an OpenClaw-native handoff template.
+3. `delivery-handoff` optionally resolves origin routing into an origin-session `systemEvent` handoff.
 4. The main-session agent writes the final user-facing explanation.
 
 ## Primary command
@@ -113,7 +113,7 @@ This layer must not:
 
 ## `delivery-handoff` boundary
 
-Use this only when the next layer needs a safe OpenClaw-native routing template without making the script layer the narrative owner.
+Use this only when the next layer needs a safe origin-session `systemEvent` handoff without making the script layer the narrative owner.
 
 ```bash
 python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
@@ -123,8 +123,9 @@ Allowed behavior:
 
 - preserve the `agent-turn-input` object
 - add `openclawDelivery`
-- resolve origin routing into a `message.send` template when safe
-- hold on unresolved/conflicting origin routes instead of silently rewriting
+- resolve origin routing into an origin-session `systemEvent` template when safe
+- emit a watchdog-only cron fallback template using the same structured system event
+- hold on missing/conflicting origin routing instead of silently rewriting
 - stay dry-run by default
 
 This layer must not:
@@ -133,12 +134,13 @@ This layer must not:
 - call `message.send`
 - prefer helper/debug context over origin routing
 - silently choose one route when `originSession` and `originTarget` disagree
+- let cron become the primary consumer of turn output
 
 ## Main-agent consumption order
 
 1. `shouldSend`
 2. `delivery` / `routing`
-3. `openclawDelivery` when routing closure is needed
+3. `openclawDelivery` when origin-session injection closure is needed
 4. facts
 5. cadence
 
@@ -148,6 +150,14 @@ Default mapping:
 - `shouldSend=true` + running + changed -> brief progress update
 - `shouldSend=true` + running + no-change -> brief heartbeat
 - `shouldSend=true` + blocked/failed/completed -> explicit status update
+
+Primary delivery path:
+
+`openclawDelivery.systemEventTemplate -> inject into originating session -> main-session agent decides visible reply`
+
+Fallback only:
+
+`openclawDelivery.watchdogCronTemplate -> low-frequency watchdog or safety-net re-injection`
 
 ## Debug path
 

@@ -6,7 +6,9 @@ Keep the runtime model small:
 - triggers provide **decision opportunities**;
 - scripts provide **mechanical facts**;
 - cadence decides whether this turn should surface or stay silent;
-- delivery metadata points back to the original task-initiating destination.
+- delivery metadata points back to the original task-initiating session;
+- origin-session `systemEvent` injection is the primary consumption path;
+- cron is only a watchdog/safety-net layer.
 
 ## Default model
 
@@ -37,7 +39,9 @@ That control should outrank ordinary timed/event-trigger defaults.
 3. `turn` reads compact remote/local state instead of re-reading full history.
 4. The cadence layer decides `visible_update` vs `silent_noop`.
 5. The turn result carries fact skeleton + cadence + origin routing.
-6. The main-session agent decides whether/how to explain it to the user.
+6. `agent-turn-input` compacts the result for main-session consumption.
+7. `delivery-handoff` packages the same compact facts into an origin-session `systemEvent` envelope when the turn should surface.
+8. The main-session agent decides whether/how to explain it to the user.
 
 ## State expectations
 
@@ -75,10 +79,21 @@ Always preserve origin routing in the structured turn result:
 - `delivery.originSession`
 - `delivery.originTarget`
 
-Do not silently replace them with the current lab/debug/helper context.
+Primary consumption path:
+
+- inject a structured `systemEvent` into `delivery.originSession`
+- let the origin-session agent consume that event and decide visible user-facing chat
+
+Cross-check / fallback only:
+
+- use `delivery.originTarget` only to validate the preserved route or support explicit downstream tooling
+- use cron only as watchdog/fallback re-injection of the same structured `systemEvent`
+
+Do not silently replace origin routing with the current lab/debug/helper context.
+Do not treat cron as the normal consumer.
 
 ## Background work
 
 Subagents and background workers may do heavy work.
 They do not own the conversation narrative.
-Important results should flow back into the main session quickly.
+Important results should flow back into the main session quickly, preferably through the preserved origin-session `systemEvent` path.

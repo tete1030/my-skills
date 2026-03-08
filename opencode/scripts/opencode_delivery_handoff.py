@@ -21,9 +21,17 @@ ALLOWED_OPENCLAW_DELIVERY_KEYS = frozenset({
     "resolutionSource",
     "preserveOrigin",
     "requiresNarrative",
-    "toolRequestTemplate",
+    "primaryDelivery",
+    "cronFallback",
+    "systemEventTemplate",
+    "watchdogCronTemplate",
 })
-ALLOWED_TOOL_REQUEST_TEMPLATE_KEYS = frozenset({"tool", "action", "channel", "target", "threadId"})
+ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS = frozenset({"sessionKey", "payload"})
+ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS = frozenset({"sessionTarget", "sessionKey", "payload"})
+ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS = frozenset({"kind", "text"})
+ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy"})
+ALLOWED_DELIVERY_POLICY_KEYS = frozenset({"primary", "cronFallback"})
+SYSTEM_EVENT_TEXT_HEADER = "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1"
 ROUTE_SENTINELS = {"topic", "thread"}
 SESSION_TARGET_KEYS = ("group", "chat", "user", "dm", "target")
 
@@ -110,43 +118,95 @@ def same_route(left, right) -> bool:
 
 
 
-def resolve_openclaw_route(routing: dict):
-    from_target = parse_origin_target(routing.get("originTarget"))
-    from_session = parse_origin_session(routing.get("originSession"))
+def build_system_event_envelope(agent_input: dict):
+    base = assert_agent_input_boundary(dict(agent_input))
+    envelope = {
+        "kind": "opencode_origin_session_handoff",
+        "version": "v1",
+        "agentInput": base,
+        "deliveryPolicy": {
+            "primary": "origin_session_system_event",
+            "cronFallback": "watchdog_only",
+        },
+    }
+    return assert_system_event_envelope_boundary(envelope)
 
-    if from_target and from_session and not same_route(from_target, from_session):
+
+
+def assert_system_event_envelope_boundary(envelope: dict) -> dict:
+    keys = set(envelope)
+    if keys != ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS:
+        raise ValueError(
+            f"delivery-handoff boundary violation: unexpected system event envelope keys {sorted(keys - ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS)}"
+        )
+
+    delivery_policy_keys = set(envelope["deliveryPolicy"])
+    if delivery_policy_keys != ALLOWED_DELIVERY_POLICY_KEYS:
+        raise ValueError(
+            "delivery-handoff boundary violation: unexpected deliveryPolicy keys "
+            f"{sorted(delivery_policy_keys - ALLOWED_DELIVERY_POLICY_KEYS)}"
+        )
+
+    assert_agent_input_boundary(dict(envelope["agentInput"]))
+    return envelope
+
+
+
+def encode_system_event_text(envelope: dict) -> str:
+    safe_envelope = assert_system_event_envelope_boundary(dict(envelope))
+    return SYSTEM_EVENT_TEXT_HEADER + "\n" + json.dumps(safe_envelope, ensure_ascii=False, indent=2)
+
+
+
+def resolve_origin_session_injection(routing: dict):
+    origin_session = routing.get("originSession")
+    from_session = parse_origin_session(origin_session)
+    from_target = parse_origin_target(routing.get("originTarget"))
+
+    if not origin_session or not isinstance(origin_session, str):
+        return {
+            "routeStatus": "missing_origin_session",
+            "reason": "origin_session_required",
+            "resolutionSource": None,
+            "sessionKey": None,
+        }
+
+    if from_session and from_target and not same_route(from_session, from_target):
         return {
             "routeStatus": "conflict",
             "reason": "origin_route_conflict",
             "resolutionSource": None,
-            "toolRequestTemplate": None,
-        }
-
-    resolved = from_target or from_session
-    resolution_source = None
-    reason = "origin_route_unresolved"
-    if from_target:
-        resolution_source = "originTarget"
-        reason = "resolved_from_origin_target"
-    elif from_session:
-        resolution_source = "originSession"
-        reason = "resolved_from_origin_session"
-
-    tool_request = None
-    if resolved:
-        tool_request = {
-            "tool": "message.send",
-            "action": "send",
-            "channel": resolved.get("channel"),
-            "target": resolved.get("target"),
-            "threadId": resolved.get("threadId"),
+            "sessionKey": None,
         }
 
     return {
-        "routeStatus": "ready" if resolved else "unresolved",
-        "reason": reason,
-        "resolutionSource": resolution_source,
-        "toolRequestTemplate": tool_request,
+        "routeStatus": "ready",
+        "reason": "resolved_from_origin_session",
+        "resolutionSource": "originSession",
+        "sessionKey": origin_session,
+    }
+
+
+
+def build_system_event_template(session_key: str, text: str):
+    return {
+        "sessionKey": session_key,
+        "payload": {
+            "kind": "systemEvent",
+            "text": text,
+        },
+    }
+
+
+
+def build_watchdog_cron_template(session_key: str, text: str):
+    return {
+        "sessionTarget": "main",
+        "sessionKey": session_key,
+        "payload": {
+            "kind": "systemEvent",
+            "text": text,
+        },
     }
 
 
@@ -176,12 +236,34 @@ def assert_handoff_boundary(result: dict) -> dict:
     if delivery_keys != ALLOWED_OPENCLAW_DELIVERY_KEYS:
         raise ValueError(f"delivery-handoff boundary violation: unexpected openclawDelivery keys {sorted(delivery_keys - ALLOWED_OPENCLAW_DELIVERY_KEYS)}")
 
-    tool_request = result["openclawDelivery"]["toolRequestTemplate"]
-    if tool_request is not None:
-        template_keys = set(tool_request)
-        if template_keys != ALLOWED_TOOL_REQUEST_TEMPLATE_KEYS:
+    system_event = result["openclawDelivery"]["systemEventTemplate"]
+    if system_event is not None:
+        template_keys = set(system_event)
+        if template_keys != ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS:
             raise ValueError(
-                f"delivery-handoff boundary violation: unexpected toolRequestTemplate keys {sorted(template_keys - ALLOWED_TOOL_REQUEST_TEMPLATE_KEYS)}"
+                "delivery-handoff boundary violation: unexpected systemEventTemplate keys "
+                f"{sorted(template_keys - ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS)}"
+            )
+        payload_keys = set(system_event["payload"])
+        if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected systemEventTemplate payload keys "
+                f"{sorted(payload_keys - ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS)}"
+            )
+
+    watchdog = result["openclawDelivery"]["watchdogCronTemplate"]
+    if watchdog is not None:
+        template_keys = set(watchdog)
+        if template_keys != ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected watchdogCronTemplate keys "
+                f"{sorted(template_keys - ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS)}"
+            )
+        payload_keys = set(watchdog["payload"])
+        if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected watchdogCronTemplate payload keys "
+                f"{sorted(payload_keys - ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS)}"
             )
 
     return result
@@ -191,22 +273,29 @@ def assert_handoff_boundary(result: dict) -> dict:
 def build_delivery_handoff(agent_input: dict, dry_run: bool = True):
     base = assert_agent_input_boundary(dict(agent_input))
     routing = base.get("routing") or {}
-    route = resolve_openclaw_route(routing)
+    route = resolve_origin_session_injection(routing)
     should_send = bool(base.get("shouldSend"))
 
-    if should_send:
-        delivery_action = "handoff" if route["routeStatus"] == "ready" else "hold"
+    system_event_template = None
+    watchdog_cron_template = None
+    if should_send and route["routeStatus"] == "ready":
+        envelope = build_system_event_envelope(base)
+        text = encode_system_event_text(envelope)
+        system_event_template = build_system_event_template(route["sessionKey"], text)
+        watchdog_cron_template = build_watchdog_cron_template(route["sessionKey"], text)
+        delivery_action = "inject"
         reason = route["reason"]
-        tool_request = route["toolRequestTemplate"] if route["routeStatus"] == "ready" else None
+    elif should_send:
+        delivery_action = "hold"
+        reason = route["reason"]
     else:
         delivery_action = "skip"
         reason = "should_not_send"
-        tool_request = None
 
     result = {
         **base,
         "openclawDelivery": {
-            "kind": "openclaw_message_send_handoff_v1",
+            "kind": "openclaw_origin_session_system_event_handoff_v1",
             "dryRun": bool(dry_run),
             "deliveryAction": delivery_action,
             "routeStatus": route["routeStatus"],
@@ -214,7 +303,10 @@ def build_delivery_handoff(agent_input: dict, dry_run: bool = True):
             "resolutionSource": route["resolutionSource"],
             "preserveOrigin": bool(routing.get("mustPreserveOrigin")),
             "requiresNarrative": should_send,
-            "toolRequestTemplate": tool_request,
+            "primaryDelivery": "origin_session_system_event",
+            "cronFallback": "watchdog_only",
+            "systemEventTemplate": system_event_template,
+            "watchdogCronTemplate": watchdog_cron_template,
         },
     }
     return assert_handoff_boundary(result)
@@ -223,7 +315,7 @@ def build_delivery_handoff(agent_input: dict, dry_run: bool = True):
 
 def main():
     p = argparse.ArgumentParser(
-        description="Resolve compact agent-turn input into an OpenClaw-native delivery handoff without rendering chat text or sending messages."
+        description="Resolve compact agent-turn input into an origin-session systemEvent handoff without rendering chat text or sending messages."
     )
     p.add_argument("--input", required=True)
     p.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this command never sends messages")

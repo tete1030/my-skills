@@ -220,9 +220,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_ati.add_argument("--input", required=True)
     p_ati.set_defaults(func=cmd_agent_turn_input)
 
-    p_dh = sub.add_parser("delivery-handoff", help="Resolve compact agent-turn input into an OpenClaw-native delivery handoff without rendering chat prose or sending messages.")
+    p_dh = sub.add_parser("delivery-handoff", help="Resolve compact agent-turn input into an origin-session systemEvent handoff with cron only as watchdog fallback.")
     p_dh.add_argument("--input", required=True)
-    p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not send messages")
+    p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not inject or send messages")
     p_dh.set_defaults(func=cmd_delivery_handoff)
 
     return p
