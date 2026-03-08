@@ -41,7 +41,8 @@ That control should outrank ordinary timed/event-trigger defaults.
 5. The turn result carries fact skeleton + cadence + origin routing.
 6. `agent-turn-input` compacts the result for main-session consumption.
 7. `delivery-handoff` packages the same compact facts into an origin-session `systemEvent` envelope when the turn should surface.
-8. The main-session agent decides whether/how to explain it to the user.
+8. `origin-session-consume` recognizes that injected event inside the originating session and unwraps it into compact runtime intake.
+9. The main-session agent decides whether/how to explain it to the user.
 
 ## State expectations
 
@@ -82,7 +83,8 @@ Always preserve origin routing in the structured turn result:
 Primary consumption path:
 
 - inject a structured `systemEvent` into `delivery.originSession`
-- let the origin-session agent consume that event and decide visible user-facing chat
+- let `origin-session-consume` validate/unwrap that event inside the origin session
+- let the origin-session agent decide visible user-facing chat
 
 Cross-check / fallback only:
 

@@ -137,7 +137,7 @@ Cron is relegated to **fallback/watchdog** use:
 
 The primary model remains:
 
-`turn -> agent-turn-input -> delivery-handoff -> inject structured systemEvent into originating session -> main-session agent decides visible reply`
+`turn -> agent-turn-input -> delivery-handoff -> inject structured systemEvent into originating session -> origin-session-consume -> main-session agent decides visible reply`
 
 ## Boundary
 

@@ -152,9 +152,36 @@ def assert_system_event_envelope_boundary(envelope: dict) -> dict:
 
 
 
+def assert_system_event_payload_boundary(payload: dict) -> dict:
+    payload_keys = set(payload)
+    if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
+        raise ValueError(
+            "delivery-handoff boundary violation: unexpected system event payload keys "
+            f"{sorted(payload_keys - ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS)}"
+        )
+    if payload.get("kind") != "systemEvent":
+        raise ValueError("delivery-handoff boundary violation: system event payload kind must be 'systemEvent'")
+    if not isinstance(payload.get("text"), str) or not payload["text"]:
+        raise ValueError("delivery-handoff boundary violation: system event payload text must be non-empty")
+    return payload
+
+
+
 def encode_system_event_text(envelope: dict) -> str:
     safe_envelope = assert_system_event_envelope_boundary(dict(envelope))
     return SYSTEM_EVENT_TEXT_HEADER + "\n" + json.dumps(safe_envelope, ensure_ascii=False, indent=2)
+
+
+
+def decode_system_event_text(text: str) -> dict:
+    if not isinstance(text, str) or not text.startswith(SYSTEM_EVENT_TEXT_HEADER + "\n"):
+        raise ValueError("delivery-handoff boundary violation: unrecognized system event text header")
+    payload = text.split("\n", 1)[1]
+    try:
+        envelope = json.loads(payload)
+    except json.JSONDecodeError as exc:
+        raise ValueError("delivery-handoff boundary violation: invalid system event JSON payload") from exc
+    return assert_system_event_envelope_boundary(envelope)
 
 
 
@@ -244,12 +271,7 @@ def assert_handoff_boundary(result: dict) -> dict:
                 "delivery-handoff boundary violation: unexpected systemEventTemplate keys "
                 f"{sorted(template_keys - ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS)}"
             )
-        payload_keys = set(system_event["payload"])
-        if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
-            raise ValueError(
-                "delivery-handoff boundary violation: unexpected systemEventTemplate payload keys "
-                f"{sorted(payload_keys - ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS)}"
-            )
+        assert_system_event_payload_boundary(system_event["payload"])
 
     watchdog = result["openclawDelivery"]["watchdogCronTemplate"]
     if watchdog is not None:
@@ -259,12 +281,7 @@ def assert_handoff_boundary(result: dict) -> dict:
                 "delivery-handoff boundary violation: unexpected watchdogCronTemplate keys "
                 f"{sorted(template_keys - ALLOWED_WATCHDOG_CRON_TEMPLATE_KEYS)}"
             )
-        payload_keys = set(watchdog["payload"])
-        if payload_keys != ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS:
-            raise ValueError(
-                "delivery-handoff boundary violation: unexpected watchdogCronTemplate payload keys "
-                f"{sorted(payload_keys - ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS)}"
-            )
+        assert_system_event_payload_boundary(watchdog["payload"])
 
     return result
 

@@ -129,6 +129,13 @@ def cmd_delivery_handoff(args) -> int:
     return run_json("opencode_delivery_handoff.py", command)
 
 
+def cmd_origin_session_consume(args) -> int:
+    command = ["--input", args.input]
+    if args.expected_session:
+        command += ["--expected-session", args.expected_session]
+    return run_json("opencode_origin_session_consume.py", command)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes. Happy-path turn output is structured facts plus cadence and delivery metadata."
@@ -224,6 +231,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_dh.add_argument("--input", required=True)
     p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not inject or send messages")
     p_dh.set_defaults(func=cmd_delivery_handoff)
+
+    p_osc = sub.add_parser("origin-session-consume", help="Recognize an opencode origin-session systemEvent and expose compact runtime intake for the main-session agent.")
+    p_osc.add_argument("--input", required=True)
+    p_osc.add_argument("--expected-session", help="optional current/origin session key to require exact origin-session consumption")
+    p_osc.set_defaults(func=cmd_origin_session_consume)
 
     return p
 

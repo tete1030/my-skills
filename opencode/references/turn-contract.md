@@ -5,7 +5,8 @@ The happy path is:
 1. `turn` produces a small, mechanical result.
 2. `agent-turn-input` optionally adapts that result into compact main-agent guidance.
 3. `delivery-handoff` optionally resolves origin routing into an origin-session `systemEvent` handoff.
-4. The main-session agent writes the final user-facing explanation.
+4. `origin-session-consume` optionally unwraps that injected `systemEvent` into compact runtime intake for the originating session.
+5. The main-session agent writes the final user-facing explanation.
 
 ## Primary command
 
@@ -141,8 +142,9 @@ This layer must not:
 1. `shouldSend`
 2. `delivery` / `routing`
 3. `openclawDelivery` when origin-session injection closure is needed
-4. facts
-5. cadence
+4. `runtimeConsumption` when the originating session is unwrapping an injected system event
+5. facts
+6. cadence
 
 Default mapping:
 
@@ -153,7 +155,7 @@ Default mapping:
 
 Primary delivery path:
 
-`openclawDelivery.systemEventTemplate -> inject into originating session -> main-session agent decides visible reply`
+`openclawDelivery.systemEventTemplate -> inject into originating session -> origin-session-consume -> main-session agent decides visible reply`
 
 Fallback only:
 
