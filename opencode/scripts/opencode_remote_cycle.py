@@ -7,13 +7,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from opencode_api_client import OpenCodeClient
-from opencode_cycle import load_state, write_json, now_iso, append_history, decide
+from opencode_cycle import load_state, write_json, now_iso, append_history, decide, apply_control
 from opencode_snapshot import compact_latest_message
 
 
 def stable_digest(value) -> str:
     raw = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+def load_json(path: str | None):
+    if not path:
+        return None
+    return json.loads(Path(path).read_text())
+
 
 
 def derive_phase(todo, fallback=None):
@@ -125,6 +131,7 @@ def main():
     p.add_argument("--base-url", required=True)
     p.add_argument("--session-id", required=True)
     p.add_argument("--state", required=True)
+    p.add_argument("--control")
     p.add_argument("--token")
     p.add_argument("--timeout", type=int, default=20)
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
@@ -133,17 +140,21 @@ def main():
 
     state_path = Path(args.state)
     before = load_state(state_path)
-    after = deepcopy(before)
+    effective_before = deepcopy(before)
+    control = load_json(args.control)
+    if control:
+        apply_control(effective_before, control)
+    after = deepcopy(effective_before)
 
     client = OpenCodeClient(base_url=args.base_url, token=args.token, timeout=args.timeout)
     snapshot = build_snapshot(client, args.session_id)
-    observation = snapshot_to_observation(snapshot, before)
-    decision = decide(before, observation, no_change_visible_after_min=args.no_change_visible_after_min)
+    observation = snapshot_to_observation(snapshot, effective_before)
+    decision = decide(effective_before, observation, no_change_visible_after_min=args.no_change_visible_after_min)
 
     after.update({k: v for k, v in observation.items() if k != "visibleUpdate"})
     after["lastDecision"] = decision["decision"]
     if observation.get("noChange"):
-        after["consecutiveNoChangeCount"] = int(before.get("consecutiveNoChangeCount", 0)) + 1
+        after["consecutiveNoChangeCount"] = int(effective_before.get("consecutiveNoChangeCount", 0)) + 1
     else:
         after["consecutiveNoChangeCount"] = 0
     if decision["decision"] == "visible_update":
@@ -158,10 +169,12 @@ def main():
         write_json(state_path, after)
 
     print(json.dumps({
+        "control": control,
         "snapshot": snapshot,
         "observation": observation,
         "decision": decision,
         "before": before,
+        "effectiveBefore": effective_before,
         "after": after,
         "wrote": bool(args.write),
     }, ensure_ascii=False, indent=2))

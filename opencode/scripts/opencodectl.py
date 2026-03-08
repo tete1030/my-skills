@@ -47,6 +47,8 @@ def cmd_snapshot(args) -> int:
     command = ["--base-url", args.base_url, "--session-id", args.session_id]
     if args.control:
         command += ["--control", args.control]
+    if getattr(args, "control", None):
+        command += ["--control", args.control]
     if args.token:
         command += ["--token", args.token]
     command += ["--timeout", str(args.timeout)]
@@ -144,6 +146,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_rc.add_argument("--base-url", required=True)
     p_rc.add_argument("--session-id", required=True)
     p_rc.add_argument("--state", required=True)
+    p_rc.add_argument("--control")
     p_rc.add_argument("--token")
     p_rc.add_argument("--timeout", type=int, default=20)
     p_rc.add_argument("--no-change-visible-after-min", type=int, default=30)

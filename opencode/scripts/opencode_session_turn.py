@@ -50,6 +50,8 @@ def main() -> None:
         "--timeout", str(args.timeout),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
     ]
+    if args.control:
+        cycle_args += ["--control", args.control]
     if args.token:
         cycle_args += ["--token", args.token]
     if args.write:
@@ -58,14 +60,6 @@ def main() -> None:
     cycle_stdout = run_capture("opencode_remote_cycle.py", cycle_args)
     payload = json.loads(cycle_stdout)
     control = load_json(args.control)
-
-    if control is not None:
-        payload["control"] = control
-        if isinstance(payload.get("after"), dict):
-            payload["after"].update(control)
-        if isinstance(payload.get("before"), dict):
-            # preserve original before-state; do not mutate it with control
-            pass
 
     if args.payload_out:
         Path(args.payload_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -84,6 +78,8 @@ def main() -> None:
 
     print(json.dumps({
         "control": control,
+        "decision": (payload.get("decision") or {}),
+        "updateEmitted": bool(update_text),
         "payload": payload,
         "update": update_text,
     }, ensure_ascii=False, indent=2))

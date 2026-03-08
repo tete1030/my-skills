@@ -35,6 +35,7 @@ python3 scripts/opencodectl.py cycle \
   --state <state.json> \
   [--control <control.json>] \
   [--observation <observation.json>] \
+  [--control <control.json>] \
   [--write]
 ```
 

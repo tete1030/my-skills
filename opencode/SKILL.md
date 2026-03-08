@@ -44,7 +44,7 @@ Use this skill to decide:
 Default to the unified entrypoint:
 - `scripts/opencodectl.py`
 
-Prefer `session-turn` when you want one remote observation pass plus one main-session-ready update. Use its optional `--control` input when the same chat turn also updates execution policy or control state.
+Prefer `session-turn` when you want one remote observation pass plus one main-session-ready update. Use its optional `--control` input when the same chat turn also updates execution policy or control state. That control should affect the decision pass itself, not just the final rendered payload.
 Use lower-level scripts only when debugging or refining internals.
 
 ### 4. Experimentation support
