@@ -86,3 +86,18 @@ python3 scripts/opencodectl.py render-update \
   --input <cycle-output.json> \
   [--quiet-when-empty]
 ```
+
+
+### Run one main-session-ready remote turn
+
+```bash
+python3 scripts/opencodectl.py session-turn \
+  --base-url <url> \
+  --session-id <session-id> \
+  --state <state.json> \
+  [--write] \
+  [--payload-out <payload.json>] \
+  [--update-out <update.txt>]
+```
+
+This is the preferred higher-level experiment entrypoint when you want one remote observation pass plus one rendered main-session update.

@@ -44,6 +44,7 @@ Use this skill to decide:
 Default to the unified entrypoint:
 - `scripts/opencodectl.py`
 
+Prefer `session-turn` when you want one remote observation pass plus one main-session-ready update.
 Use lower-level scripts only when debugging or refining internals.
 
 ### 4. Experimentation support
@@ -119,7 +120,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 
 ### Primary exposed surface
 - `references/control-surface.md` — unified control surface and command patterns.
-- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, and visible update rendering.
+- `scripts/opencodectl.py` — unified operational entrypoint for state init/show, local cycle, multi-step scenarios, remote snapshot, remote cycle, visible update rendering, and one-shot session turns.
 
 ### Supporting references
 - `references/execution-model.md` — system model and layer responsibilities.
@@ -137,6 +138,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
 - `scripts/opencode_scenario.py` — replay a multi-step local scenario through the decision loop for experiment design and regression checks.
 - `scripts/opencode_render_update.py` — render a concise main-session progress message from cycle results.
+- `scripts/opencode_session_turn.py` — combine remote-cycle and update rendering into one higher-level turn.
 
 ## Packaging guidance
 

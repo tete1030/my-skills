@@ -84,6 +84,27 @@ def cmd_render_update(args) -> int:
         command.append("--quiet-when-empty")
     return run_json("opencode_render_update.py", command)
 
+
+def cmd_session_turn(args) -> int:
+    command = [
+        "--base-url", args.base_url,
+        "--session-id", args.session_id,
+        "--state", args.state,
+        "--timeout", str(args.timeout),
+        "--no-change-visible-after-min", str(args.no_change_visible_after_min),
+    ]
+    if args.token:
+        command += ["--token", args.token]
+    if args.write:
+        command.append("--write")
+    if args.payload_out:
+        command += ["--payload-out", args.payload_out]
+    if args.update_out:
+        command += ["--update-out", args.update_out]
+    if args.quiet_when_empty:
+        command.append("--quiet-when-empty")
+    return run_json("opencode_session_turn.py", command)
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes."
@@ -134,6 +155,19 @@ def build_parser() -> argparse.ArgumentParser:
     p_ru.add_argument("--input", required=True)
     p_ru.add_argument("--quiet-when-empty", action="store_true")
     p_ru.set_defaults(func=cmd_render_update)
+
+    p_st = sub.add_parser("session-turn", help="Run one remote cycle and render a main-session-ready update.")
+    p_st.add_argument("--base-url", required=True)
+    p_st.add_argument("--session-id", required=True)
+    p_st.add_argument("--state", required=True)
+    p_st.add_argument("--token")
+    p_st.add_argument("--timeout", type=int, default=20)
+    p_st.add_argument("--no-change-visible-after-min", type=int, default=30)
+    p_st.add_argument("--write", action="store_true")
+    p_st.add_argument("--payload-out")
+    p_st.add_argument("--update-out")
+    p_st.add_argument("--quiet-when-empty", action="store_true")
+    p_st.set_defaults(func=cmd_session_turn)
 
     return p
 
