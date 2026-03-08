@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Design and operate an OpenCode→OpenClaw loop with a main-session-centered model. Prefer `scripts/opencodectl.py turn` for the happy path and `agent-turn-input` for the compact main-agent handoff. Use when refining turn boundaries, cadence, routing, or the structured fact output consumed by the main session.
+description: Design and operate an OpenCode→OpenClaw loop with a main-session-centered model. Prefer `scripts/opencodectl.py turn` for the happy path, `agent-turn-input` for compact main-agent guidance, and `delivery-handoff` for OpenClaw-native origin-preserving routing templates. Use when refining turn boundaries, cadence, routing, or the structured fact output consumed by the main session.
 ---
 
 # Opencode
@@ -25,7 +25,8 @@ Keep this skill centered on one idea:
 
 1. `references/runtime-loop.md`
 2. `references/turn-contract.md`
-3. `references/api-surface.md` only when changing snapshot/API assumptions
+3. `references/delivery-handoff.md` when you need the OpenClaw-native routing closure after `agent-turn-input`
+4. `references/api-surface.md` only when changing snapshot/API assumptions
 
 ## Happy path
 
@@ -51,6 +52,12 @@ Use `agent-turn-input` when the main-session agent wants a compact send/skip + u
 python3 scripts/opencodectl.py agent-turn-input --input <turn-result.json>
 ```
 
+Use `delivery-handoff` only when the next layer needs an OpenClaw-native routing template that still preserves the original destination and still does **not** author chat text:
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
+```
+
 Use `explain-turn` or lower-level commands only for debugging.
 Do not make the agent memorize the lower-level scripts for routine use.
 
@@ -59,6 +66,7 @@ Do not make the agent memorize the lower-level scripts for routine use.
 Keep:
 - `turn`
 - `agent-turn-input`
+- `delivery-handoff` for OpenClaw-native routing templates
 - `explain-turn` for debugging
 - `api-surface` when integration assumptions change
 

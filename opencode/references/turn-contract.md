@@ -4,7 +4,8 @@ The happy path is:
 
 1. `turn` produces a small, mechanical result.
 2. `agent-turn-input` optionally adapts that result into compact main-agent guidance.
-3. The main-session agent writes the final user-facing explanation.
+3. `delivery-handoff` optionally resolves origin routing into an OpenClaw-native handoff template.
+4. The main-session agent writes the final user-facing explanation.
 
 ## Primary command
 
@@ -110,12 +111,36 @@ This layer must not:
 - rewrite routing away from the originating destination
 - become the narrative owner
 
+## `delivery-handoff` boundary
+
+Use this only when the next layer needs a safe OpenClaw-native routing template without making the script layer the narrative owner.
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
+```
+
+Allowed behavior:
+
+- preserve the `agent-turn-input` object
+- add `openclawDelivery`
+- resolve origin routing into a `message.send` template when safe
+- hold on unresolved/conflicting origin routes instead of silently rewriting
+- stay dry-run by default
+
+This layer must not:
+
+- generate final reply text
+- call `message.send`
+- prefer helper/debug context over origin routing
+- silently choose one route when `originSession` and `originTarget` disagree
+
 ## Main-agent consumption order
 
 1. `shouldSend`
 2. `delivery` / `routing`
-3. facts
-4. cadence
+3. `openclawDelivery` when routing closure is needed
+4. facts
+5. cadence
 
 Default mapping:
 

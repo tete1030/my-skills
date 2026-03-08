@@ -122,6 +122,13 @@ def cmd_agent_turn_input(args) -> int:
     return run_json("opencode_agent_turn_input.py", command)
 
 
+def cmd_delivery_handoff(args) -> int:
+    command = ["--input", args.input]
+    if args.live_ready:
+        command.append("--live-ready")
+    return run_json("opencode_delivery_handoff.py", command)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes. Happy-path turn output is structured facts plus cadence and delivery metadata."
@@ -212,6 +219,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_ati = sub.add_parser("agent-turn-input", help="Transform a structured turn result into compact main-agent input without rendering chat prose.")
     p_ati.add_argument("--input", required=True)
     p_ati.set_defaults(func=cmd_agent_turn_input)
+
+    p_dh = sub.add_parser("delivery-handoff", help="Resolve compact agent-turn input into an OpenClaw-native delivery handoff without rendering chat prose or sending messages.")
+    p_dh.add_argument("--input", required=True)
+    p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not send messages")
+    p_dh.set_defaults(func=cmd_delivery_handoff)
 
     return p
 
