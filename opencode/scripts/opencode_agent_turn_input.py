@@ -3,6 +3,37 @@ import argparse
 import json
 from pathlib import Path
 
+# Hard boundary for the agent-consumption layer:
+# - allowed: send/skip recommendation, update classification, compact facts, cadence,
+#   and origin-preserving routing hints;
+# - caution: expose only fact fields that a live main-session agent may or may not mention;
+# - disallowed: rendered chat text, strategy trees, next-step plans, or rewritten delivery.
+# This adapter exists to prepare agent input, not to become a narrative/strategy engine.
+ALLOWED_TOP_LEVEL_KEYS = frozenset({
+    "shouldSend",
+    "action",
+    "updateType",
+    "priority",
+    "style",
+    "reason",
+    "narrativeOwner",
+    "mentionFields",
+    "facts",
+    "cadence",
+    "routing",
+})
+ALLOWED_FACT_KEYS = frozenset({"status", "phase", "latestMeaningfulPreview"})
+ALLOWED_CADENCE_KEYS = frozenset({
+    "decision",
+    "noChange",
+    "consecutiveNoChangeCount",
+    "lastVisibleUpdateAt",
+})
+ALLOWED_ROUTING_KEYS = frozenset({"originSession", "originTarget", "mustPreserveOrigin"})
+
+HEARTBEAT_FACT_FIELDS = ("status", "phase")
+DEFAULT_VISIBLE_FACT_FIELDS = ("status", "phase", "latestMeaningfulPreview")
+
 
 def load_json(path: Path):
     return json.loads(path.read_text())
@@ -48,9 +79,9 @@ def style_for(kind: str) -> str:
 
 def mention_fields_for(kind: str) -> list[str]:
     if kind == "heartbeat":
-        return ["status", "phase"]
+        return list(HEARTBEAT_FACT_FIELDS)
     if kind in {"blocked", "failed", "completed", "progress"}:
-        return ["status", "phase", "latestMeaningfulPreview"]
+        return list(DEFAULT_VISIBLE_FACT_FIELDS)
     return []
 
 
@@ -64,6 +95,30 @@ def compact_facts(turn_result, fields: list[str]) -> dict:
     return out
 
 
+def assert_agent_input_boundary(agent_input: dict) -> dict:
+    keys = set(agent_input)
+    if keys != ALLOWED_TOP_LEVEL_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected top-level keys {sorted(keys - ALLOWED_TOP_LEVEL_KEYS)}")
+
+    fact_keys = set(agent_input["facts"])
+    if fact_keys - ALLOWED_FACT_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected fact keys {sorted(fact_keys - ALLOWED_FACT_KEYS)}")
+
+    mention_fields = set(agent_input["mentionFields"])
+    if mention_fields - ALLOWED_FACT_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected mention fields {sorted(mention_fields - ALLOWED_FACT_KEYS)}")
+
+    cadence_keys = set(agent_input["cadence"])
+    if cadence_keys != ALLOWED_CADENCE_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected cadence keys {sorted(cadence_keys - ALLOWED_CADENCE_KEYS)}")
+
+    routing_keys = set(agent_input["routing"])
+    if routing_keys != ALLOWED_ROUTING_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected routing keys {sorted(routing_keys - ALLOWED_ROUTING_KEYS)}")
+
+    return agent_input
+
+
 def build_agent_turn_input(turn_result):
     fact = turn_result.get("factSkeleton") or {}
     cadence = turn_result.get("cadence") or {}
@@ -72,7 +127,7 @@ def build_agent_turn_input(turn_result):
     kind = update_type(turn_result)
     mention_fields = mention_fields_for(kind)
 
-    return {
+    agent_input = {
         "shouldSend": should_send,
         "action": "send_update" if should_send else "stay_silent",
         "updateType": kind,
@@ -94,7 +149,7 @@ def build_agent_turn_input(turn_result):
             "mustPreserveOrigin": bool(delivery.get("originSession") or delivery.get("originTarget")),
         },
     }
-
+    return assert_agent_input_boundary(agent_input)
 
 
 def main():

@@ -8,6 +8,23 @@ from pathlib import Path
 PY = sys.executable
 SCRIPT_DIR = Path(__file__).resolve().parent
 
+# Hard boundary for the happy-path turn envelope:
+# - allowed: mechanical facts, default send/skip recommendation, origin-preserving delivery,
+#   and cadence metadata;
+# - caution: control input may influence the decision pass but should not be echoed back as
+#   part of the agent-consumption happy path;
+# - disallowed: rendered user-facing prose, strategy/narrative plans, or helper-context routing.
+ALLOWED_TURN_KEYS = frozenset({"factSkeleton", "shouldSend", "delivery", "cadence"})
+DEBUG_ONLY_TURN_KEYS = frozenset({"payload"})
+ALLOWED_FACT_SKELETON_KEYS = frozenset({"status", "phase", "latestMeaningfulPreview", "reason"})
+ALLOWED_DELIVERY_KEYS = frozenset({"originSession", "originTarget"})
+ALLOWED_CADENCE_KEYS = frozenset({
+    "decision",
+    "noChange",
+    "consecutiveNoChangeCount",
+    "lastVisibleUpdateAt",
+})
+
 
 def run_capture(script_name: str, args: list[str]) -> str:
     script = SCRIPT_DIR / script_name
@@ -19,12 +36,6 @@ def run_capture(script_name: str, args: list[str]) -> str:
             print(proc.stderr, end="", file=sys.stderr)
         raise SystemExit(proc.returncode)
     return proc.stdout
-
-
-def load_json(path: str | None):
-    if not path:
-        return None
-    return json.loads(Path(path).read_text())
 
 
 def short(text, n=120):
@@ -70,6 +81,30 @@ def build_cadence(payload):
     }
 
 
+def assert_turn_boundary(result: dict, include_payload: bool = False) -> dict:
+    allowed_keys = set(ALLOWED_TURN_KEYS)
+    if include_payload:
+        allowed_keys |= DEBUG_ONLY_TURN_KEYS
+
+    result_keys = set(result)
+    if result_keys != allowed_keys:
+        raise ValueError(f"turn boundary violation: unexpected top-level keys {sorted(result_keys - allowed_keys)}")
+
+    fact_keys = set(result["factSkeleton"])
+    if fact_keys != ALLOWED_FACT_SKELETON_KEYS:
+        raise ValueError(f"turn boundary violation: unexpected factSkeleton keys {sorted(fact_keys - ALLOWED_FACT_SKELETON_KEYS)}")
+
+    delivery_keys = set(result["delivery"])
+    if delivery_keys != ALLOWED_DELIVERY_KEYS:
+        raise ValueError(f"turn boundary violation: unexpected delivery keys {sorted(delivery_keys - ALLOWED_DELIVERY_KEYS)}")
+
+    cadence_keys = set(result["cadence"])
+    if cadence_keys != ALLOWED_CADENCE_KEYS:
+        raise ValueError(f"turn boundary violation: unexpected cadence keys {sorted(cadence_keys - ALLOWED_CADENCE_KEYS)}")
+
+    return result
+
+
 def build_turn_result(payload, control=None, origin_session=None, origin_target=None, include_payload=False):
     fact_skeleton = build_fact_skeleton(payload)
     cadence = build_cadence(payload)
@@ -78,16 +113,18 @@ def build_turn_result(payload, control=None, origin_session=None, origin_target=
         "originTarget": origin_target,
     }
     should_send = cadence.get("decision") == "visible_update"
+
+    # `control` is intentionally consumed during the decision pass but omitted from the
+    # happy-path turn envelope so the result stays mechanical and delivery-safe.
     result = {
         "factSkeleton": fact_skeleton,
         "shouldSend": should_send,
         "delivery": delivery,
         "cadence": cadence,
-        "control": control,
     }
     if include_payload:
         result["payload"] = payload
-    return result
+    return assert_turn_boundary(result, include_payload=include_payload)
 
 
 def main() -> None:
@@ -124,7 +161,6 @@ def main() -> None:
 
     cycle_stdout = run_capture("opencode_remote_cycle.py", cycle_args)
     payload = json.loads(cycle_stdout)
-    control = load_json(args.control)
 
     if args.payload_out:
         Path(args.payload_out).write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n")
@@ -132,7 +168,6 @@ def main() -> None:
     print(json.dumps(
         build_turn_result(
             payload,
-            control=control,
             origin_session=args.origin_session,
             origin_target=args.origin_target,
             include_payload=args.include_payload,

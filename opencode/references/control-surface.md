@@ -35,7 +35,12 @@ This is the default high-level path for a single main-session turn:
 - apply control input if present;
 - observe remote OpenCode state;
 - decide whether a visible update is warranted;
-- emit a structured turn result containing fact skeleton fields, cadence, and delivery metadata.
+- emit a structured turn result containing only fact skeleton fields, cadence, and delivery metadata.
+
+Hard boundary for the happy path:
+- allowed: `factSkeleton`, `shouldSend`, `delivery`, `cadence`;
+- caution: control input may influence the decision pass, but it should not be echoed back into the normal turn result;
+- disallowed: rendered chat prose, narrative strategy, and helper-context routing.
 
 Happy-path consumers should read fields such as:
 - `factSkeleton.status`

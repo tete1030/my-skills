@@ -14,6 +14,7 @@ Keep the main session as the primary decision surface and the primary user-visib
 - Prefer `executionMode = main_session_centered` unless a later design revision explicitly changes it.
 - Treat `opencodectl.py turn` as the **happy-path structured turn output**.
 - Let mechanical/script layers emit facts, cadence, and routing metadata; let the main-session agent write the final explanation.
+- Keep a hard boundary around the agent-consumption layer: recommendation metadata is allowed, but rendered prose, strategy trees, and helper-context delivery rewrites are not.
 - Keep environment-specific paths, hostnames, credentials, and local lab details **out of the skill package and out of committed docs**.
 
 ## Read order

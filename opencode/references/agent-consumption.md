@@ -11,6 +11,40 @@ The main-session agent should:
 - preserve originating-session delivery;
 - write the final user-facing explanation in live context.
 
+## Hard boundary for the agent-consumption layer
+
+This layer exists to help a main-session agent consume one `turn` result safely.
+It must not grow into a strategy planner or narrative renderer.
+
+### Allowed scope
+
+The adapter may:
+- preserve the `shouldSend` default recommendation;
+- classify the update shape (`progress`, `heartbeat`, `blocked`, `failed`, `completed`, `silent`);
+- expose compact fact fields already present in `factSkeleton`;
+- expose cadence fields that help the main agent stay brief or stay silent;
+- preserve `originSession` / `originTarget` routing semantics.
+
+### Caution scope
+
+The adapter may provide recommendation metadata such as `style`, `priority`, or `mentionFields`, but only as compact hints.
+Those hints should remain:
+- mechanically derived from the structured turn result;
+- small enough to audit quickly;
+- optional for the main-session agent to follow verbatim.
+
+If a fact is not already in the turn result, the adapter should not invent it.
+If a conversational nuance depends on live context, the main-session agent should decide it at send time.
+
+### Disallowed scope
+
+The adapter should **not**:
+- generate polished chat paragraphs, headlines, or canned replies;
+- add strategy trees, next-step plans, or escalation scripts;
+- rewrite delivery away from the originating session;
+- echo raw payload dumps into the happy path;
+- become the place where user-facing tone or narrative policy is implemented.
+
 ## Consumption order
 
 1. Read `shouldSend` first.

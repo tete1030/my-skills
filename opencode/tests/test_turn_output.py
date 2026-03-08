@@ -5,7 +5,14 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from opencode_session_turn import build_turn_result  # noqa: E402
+from opencode_session_turn import (  # noqa: E402
+    ALLOWED_CADENCE_KEYS,
+    ALLOWED_DELIVERY_KEYS,
+    ALLOWED_FACT_SKELETON_KEYS,
+    ALLOWED_TURN_KEYS,
+    DEBUG_ONLY_TURN_KEYS,
+    build_turn_result,
+)
 
 
 class TurnOutputTests(unittest.TestCase):
@@ -43,6 +50,7 @@ class TurnOutputTests(unittest.TestCase):
         self.assertFalse(result["cadence"]["noChange"])
         self.assertNotIn("fallback", result)
         self.assertNotIn("payload", result)
+        self.assertNotIn("control", result)
 
     def test_turn_result_keeps_silent_cadence_without_send(self):
         payload = {
@@ -64,6 +72,49 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(result["factSkeleton"]["reason"], "recent_visible_update_exists")
         self.assertTrue(result["cadence"]["noChange"])
         self.assertEqual(result["cadence"]["consecutiveNoChangeCount"], 3)
+
+    def test_turn_schema_stays_mechanical_by_default(self):
+        payload = {
+            "decision": {"decision": "visible_update", "reason": "state_changed"},
+            "observation": {"status": "completed", "phase": "Wrap up", "noChange": False},
+            "after": {
+                "status": "completed",
+                "phase": "Wrap up",
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "snapshot": {
+                "latestAssistantTextPreview": "Done and verified.",
+                "latestMessage": {"id": "msg_latest"},
+            },
+        }
+
+        result = build_turn_result(payload, origin_session="origin-session-example", origin_target="origin-target-example")
+
+        self.assertEqual(set(result), ALLOWED_TURN_KEYS)
+        self.assertEqual(set(result["factSkeleton"]), ALLOWED_FACT_SKELETON_KEYS)
+        self.assertEqual(set(result["delivery"]), ALLOWED_DELIVERY_KEYS)
+        self.assertEqual(set(result["cadence"]), ALLOWED_CADENCE_KEYS)
+        for forbidden_key in ["control", "message", "summary", "headline", "plan", "strategy"]:
+            self.assertNotIn(forbidden_key, result)
+
+    def test_turn_payload_is_debug_only(self):
+        payload = {
+            "decision": {"decision": "visible_update", "reason": "state_changed"},
+            "observation": {"status": "running", "phase": "Verify", "noChange": False},
+            "after": {
+                "status": "running",
+                "phase": "Verify",
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "snapshot": {"latestAssistantTextPreview": "Working.", "latestMessage": {"id": "msg_latest"}},
+        }
+
+        result = build_turn_result(payload, include_payload=True)
+
+        self.assertEqual(set(result), ALLOWED_TURN_KEYS | DEBUG_ONLY_TURN_KEYS)
+        self.assertEqual(result["payload"], payload)
 
 
 if __name__ == "__main__":

@@ -14,6 +14,7 @@ The main-session agent should read the turn result, decide whether to speak, and
 - Expose cadence/no-change state so the main agent can stay quiet or be brief on purpose.
 - Avoid replaying raw API payloads into chat.
 - If a helper is used, make it emit recommendation/input metadata for the main agent rather than rendered message text.
+- Keep recommendation helpers on a hard boundary: allowed to classify and preserve routing, not allowed to author narrative or strategy.
 
 ## Happy-path output
 

@@ -11,6 +11,33 @@ The happy path should return:
 
 The main-session agent owns the final user-facing explanation.
 
+## Hard boundary
+
+The happy-path `turn` envelope should stay small and auditable.
+
+### Allowed scope
+
+`turn` may emit only:
+- `factSkeleton`
+- `shouldSend`
+- `delivery`
+- `cadence`
+
+Those fields are enough to support the main-session agent's send/skip and wording decision.
+
+### Caution scope
+
+Control input may affect the decision pass itself, but it should not be echoed back into the normal `turn` result.
+Debug payloads may exist, but only behind explicit debug flags.
+
+### Disallowed scope
+
+The happy path should **not**:
+- render final chat prose;
+- include helper-session or lab-session routing as delivery;
+- dump raw payloads by default;
+- carry narrative strategy, user-facing plans, or canned explanations.
+
 ## Happy-path envelope
 
 Prefer a turn result shaped like:

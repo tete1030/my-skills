@@ -5,7 +5,13 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
-from opencode_agent_turn_input import build_agent_turn_input  # noqa: E402
+from opencode_agent_turn_input import (  # noqa: E402
+    ALLOWED_CADENCE_KEYS,
+    ALLOWED_FACT_KEYS,
+    ALLOWED_ROUTING_KEYS,
+    ALLOWED_TOP_LEVEL_KEYS,
+    build_agent_turn_input,
+)
 
 
 class AgentTurnInputTests(unittest.TestCase):
@@ -134,6 +140,45 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["priority"], "high")
         self.assertEqual(result["style"], "brief_blocker")
         self.assertEqual(result["facts"]["latestMeaningfulPreview"], "Need user confirmation before deploy.")
+
+    def test_agent_turn_input_schema_stays_inside_boundary(self):
+        turn_result = {
+            "factSkeleton": {
+                "status": "completed",
+                "phase": "Final verification",
+                "latestMeaningfulPreview": "Validated delivery routing.",
+                "reason": "status=completed",
+            },
+            "shouldSend": True,
+            "delivery": {
+                "originSession": "origin-session-example",
+                "originTarget": "origin-target-example",
+            },
+            "cadence": {
+                "decision": "visible_update",
+                "noChange": False,
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+        }
+
+        result = build_agent_turn_input(turn_result)
+
+        self.assertEqual(set(result), ALLOWED_TOP_LEVEL_KEYS)
+        self.assertTrue(set(result["facts"]).issubset(ALLOWED_FACT_KEYS))
+        self.assertTrue(set(result["mentionFields"]).issubset(ALLOWED_FACT_KEYS))
+        self.assertEqual(set(result["cadence"]), ALLOWED_CADENCE_KEYS)
+        self.assertEqual(set(result["routing"]), ALLOWED_ROUTING_KEYS)
+        for forbidden_key in [
+            "message",
+            "summary",
+            "headline",
+            "replyText",
+            "nextSteps",
+            "strategy",
+            "plan",
+        ]:
+            self.assertNotIn(forbidden_key, result)
 
 
 if __name__ == "__main__":
