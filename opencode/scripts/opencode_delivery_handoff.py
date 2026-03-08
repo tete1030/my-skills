@@ -299,7 +299,7 @@ def build_delivery_handoff(data: dict, dry_run: bool = True):
 
 def main():
     p = argparse.ArgumentParser(
-        description="Resolve a structured turn result (preferred) or compact agent input into an origin-session systemEvent handoff without rendering chat text or sending messages."
+        description="Resolve a structured turn result (preferred) or compact agent input into an origin-session delivery handoff without rendering chat text or sending messages."
     )
     p.add_argument("--input", required=True)
     p.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this command never sends messages")

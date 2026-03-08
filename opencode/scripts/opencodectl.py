@@ -125,6 +125,17 @@ def cmd_delivery_handoff(args) -> int:
     return run_json("opencode_delivery_handoff.py", command)
 
 
+def cmd_openclaw_agent_call(args) -> int:
+    command = ["--input", args.input, "--timeout-ms", str(args.timeout_ms)]
+    if args.execute:
+        command.append("--execute")
+    if args.allow_handoff_dry_run:
+        command.append("--allow-handoff-dry-run")
+    if args.expect_final:
+        command.append("--expect-final")
+    return run_json("opencode_openclaw_agent_call.py", command)
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes. Happy-path turn output is structured facts plus cadence and delivery metadata."
@@ -216,10 +227,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_ati.add_argument("--input", required=True)
     p_ati.set_defaults(func=cmd_agent_turn_input)
 
-    p_dh = sub.add_parser("delivery-handoff", help="Resolve a structured turn result (preferred) or compact agent input into an origin-session systemEvent handoff with cron only as watchdog fallback.")
+    p_dh = sub.add_parser("delivery-handoff", help="Resolve a structured turn result (preferred) or compact agent input into an origin-session delivery handoff without authoring user-facing text.")
     p_dh.add_argument("--input", required=True)
     p_dh.add_argument("--live-ready", action="store_true", help="mark the handoff as non-dry-run metadata only; this still does not inject or send messages")
     p_dh.set_defaults(func=cmd_delivery_handoff)
+
+    p_oac = sub.add_parser("openclaw-agent-call", help="Build or execute a safe openclaw gateway call agent command from a delivery-handoff result. Dry-run by default.")
+    p_oac.add_argument("--input", required=True)
+    p_oac.add_argument("--execute", action="store_true")
+    p_oac.add_argument("--allow-handoff-dry-run", action="store_true")
+    p_oac.add_argument("--expect-final", action="store_true")
+    p_oac.add_argument("--timeout-ms", type=int, default=10000)
+    p_oac.set_defaults(func=cmd_openclaw_agent_call)
 
     return p
 

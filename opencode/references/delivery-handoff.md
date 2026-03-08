@@ -1,6 +1,13 @@
 # Delivery Handoff
 
-Use this when the main agent wants an **origin-session systemEvent handoff** that points back to the original task-initiating OpenClaw session without turning the script layer into a renderer.
+Use this when the main agent wants an **origin-session handoff** that points back to the original task-initiating OpenClaw session without turning the script layer into a renderer.
+
+The handoff remains a structured `systemEvent`-shaped envelope, but the **current practical delivery path** is:
+
+`python watcher -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent --params { sessionKey, message, deliver } -> originating session`
+
+That means the skill still emits mechanical facts/cadence/routing plus a transport-ready envelope, while the delivery bridge uses the existing OpenClaw CLI/Gateway agent path to inject that handoff into the originating session.
+The main-session agent still owns the final user-facing explanation.
 
 ## Command
 
@@ -17,8 +24,16 @@ python3 scripts/opencodectl.py delivery-handoff --input <agent-turn-input.json>
 ```
 
 Default behavior is **dry-run metadata only**.
-This command does **not** inject or send anything.
-It only resolves whether the turn can be represented as a structured `systemEvent` envelope for the original OpenClaw session.
+This command does **not** inject or send anything by itself.
+It only resolves whether the turn can be represented as a structured envelope for the original OpenClaw session.
+
+The usual next step is the dedicated bridge helper:
+
+```bash
+python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>
+```
+
+That helper also defaults to dry-run and prints the exact `openclaw gateway call agent` invocation shape it would use.
 
 Optional metadata-only switch:
 
@@ -30,7 +45,14 @@ python3 scripts/opencodectl.py delivery-handoff \
 
 `--live-ready` only flips the `dryRun` flag in the output.
 It still does **not** inject anything.
-Use it only when a downstream orchestrator already knows how to inject a `systemEvent` into the originating session.
+Use it when a downstream bridge is allowed to execute the prepared delivery path.
+
+Example live path:
+
+```bash
+python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json> --live-ready > handoff.json
+python3 scripts/opencodectl.py openclaw-agent-call --input handoff.json --execute
+```
 
 ## Input expectation
 
@@ -88,19 +110,19 @@ Allowed fields:
 
 ### `deliveryAction`
 
-- `inject` — safe origin-session systemEvent template resolved and this turn should surface
-- `hold` — this turn should surface, but origin-session injection is unresolved or conflicting
+- `inject` — safe origin-session handoff resolved and this turn should surface
+- `hold` — this turn should surface, but origin-session delivery is unresolved or conflicting
 - `skip` — this turn should stay silent
 
 ### `routeStatus`
 
-- `ready` — origin session is explicit and safe for systemEvent injection
+- `ready` — origin session is explicit and safe for the primary `sessionKey`-based delivery path
 - `missing_origin_session` — the originating OpenClaw session key is missing, so the primary path cannot be built
 - `conflict` — both origin session and origin target resolve, but they disagree; do not silently rewrite
 
 ### `systemEventTemplate`
 
-When `routeStatus=ready`, the adapter emits the **primary** origin-session injection template:
+When `routeStatus=ready`, the adapter emits the mechanical handoff template that the bridge can turn into the **practical** origin-session delivery call:
 
 ```json
 {
@@ -119,8 +141,37 @@ It carries:
 - the explicit delivery policy (`primary=origin_session_system_event`)
 
 This is intentionally **not user-facing prose**.
-The originating OpenClaw session can hand the decoded compact object straight to the main-session agent, which still decides whether/how to explain it to the user.
+The bridge may forward it as the body of an `openclaw gateway call agent` request, but that does not change ownership: the originating main-session agent still decides whether/how to explain it to the user.
 
+### Bridge to OpenClaw CLI
+
+To turn a ready handoff into the current practical transport call:
+
+```bash
+python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>
+```
+
+Default output is still dry-run.
+It prints a structured plan containing the exact CLI argv / shell command for:
+
+```bash
+openclaw gateway call agent --json --params '{"sessionKey":"...","message":"...","deliver":true}'
+```
+
+Execution is explicit:
+
+```bash
+python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json> --execute
+```
+
+Safety rules for the bridge:
+
+- require `deliveryAction=inject`
+- require `routeStatus=ready`
+- require `systemEventTemplate.sessionKey == routing.originSession`
+- require the decoded envelope to preserve the same `originSession`
+- refuse silent reroute
+- stay dry-run unless explicitly asked to execute
 
 ## Resolution rules
 
@@ -135,7 +186,7 @@ The originating OpenClaw session can hand the decoded compact object straight to
 
 This layer may:
 
-- resolve origin routing into an origin-session `systemEvent` template
+- resolve origin routing into an origin-session mechanical handoff template
 - preserve the original raw routing fields
 - compact the turn result into the small main-agent input shape
 - detect routing conflicts and refuse silent rewrites

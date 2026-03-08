@@ -7,7 +7,8 @@ Keep the runtime model small:
 - scripts provide **mechanical facts**;
 - cadence decides whether this turn should surface or stay silent;
 - delivery metadata points back to the original task-initiating session;
-- origin-session `systemEvent` injection is the primary consumption path;
+- the current practical consumption path is `openclaw gateway call agent` with `sessionKey=originSession`;
+- the transported payload remains a structured `systemEvent`-shaped handoff, not user-facing prose;
 
 ## Default model
 
@@ -38,9 +39,9 @@ That control should outrank ordinary timed/event-trigger defaults.
 3. `turn` reads compact remote/local state instead of re-reading full history.
 4. The cadence layer decides `visible_update` vs `silent_noop`.
 5. The turn result carries fact skeleton + cadence + origin routing.
-6. `delivery-handoff` packages that turn into an origin-session `systemEvent` handoff.
-7. The structured handoff is injected into the origin session.
-8. The main-session agent decides whether/how to explain it to the user.
+6. `delivery-handoff` packages that turn into a structured origin-session handoff.
+7. `openclaw-agent-call` turns that handoff into `openclaw gateway call agent --params { sessionKey, message, deliver }`.
+8. The main-session agent in the origin session decides whether/how to explain it to the user.
 
 `agent-turn-input` remains available only as an optional helper for inspecting the compact recommendation object on its own.
 It is not a required runtime hop.
@@ -83,8 +84,9 @@ Always preserve origin routing in the structured turn result:
 
 Primary consumption path:
 
-- inject a structured `systemEvent` into `delivery.originSession`
-- let the originating session surface that compact handoff to the main-session agent
+- preserve `delivery.originSession`
+- turn the ready handoff into `openclaw gateway call agent` with `sessionKey=delivery.originSession`
+- forward the structured handoff as the agent-turn message body
 - let the main-session agent decide visible user-facing chat
 
 Cross-check / fallback only:
@@ -97,4 +99,4 @@ Do not silently replace origin routing with the current lab/debug/helper context
 
 Subagents and background workers may do heavy work.
 They do not own the conversation narrative.
-Important results should flow back into the main session quickly, preferably through the preserved origin-session `systemEvent` path.
+Important results should flow back into the main session quickly, preferably through the preserved origin-session `sessionKey` path via `openclaw gateway call agent`.

@@ -3,8 +3,9 @@
 The happy path is:
 
 1. `turn` produces a small, mechanical result.
-2. `delivery-handoff` resolves origin routing and packages a structured origin-session `systemEvent` handoff directly from that turn result.
-3. The main-session agent consumes that handoff and writes the final user-facing explanation.
+2. `delivery-handoff` resolves origin routing and packages a structured origin-session handoff directly from that turn result.
+3. `openclaw-agent-call` turns that handoff into `openclaw gateway call agent --params { sessionKey, message, deliver }`.
+4. The main-session agent in the originating session consumes that handoff and writes the final user-facing explanation.
 
 `agent-turn-input` still exists, but only as an optional compact helper when you want to inspect the main-agent recommendation object directly.
 It is not required on the main path.
@@ -116,7 +117,7 @@ This layer must not:
 
 ## `delivery-handoff` boundary
 
-Use this when the next layer needs a safe origin-session `systemEvent` handoff without making the script layer the narrative owner.
+Use this when the next layer needs a safe origin-session handoff without making the script layer the narrative owner.
 Preferred input is the raw `turn` result; legacy `agent-turn-input` also works.
 
 ```bash
@@ -128,9 +129,26 @@ Allowed behavior:
 - accept a raw `turn` result and internally compact it into main-agent input
 - accept a legacy `agent-turn-input` object without changing its behavior
 - add `openclawDelivery`
-- resolve origin routing into an origin-session `systemEvent` template when safe
+- resolve origin routing into a mechanical origin-session handoff template when safe
 - hold on missing/conflicting origin routing instead of silently rewriting
 - stay dry-run by default
+
+## `openclaw-agent-call` bridge
+
+Use this to turn a ready `delivery-handoff` result into the current practical OpenClaw transport call.
+
+```bash
+python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>
+```
+
+Allowed behavior:
+
+- require `deliveryAction=inject`
+- require `routeStatus=ready`
+- require `sessionKey` preservation from `routing.originSession`
+- forward the structured handoff as the `message` body of `openclaw gateway call agent`
+- set `deliver=true` so the originating session stays the narrative surface
+- stay dry-run by default unless explicitly executed
 
 This layer must not:
 
@@ -157,9 +175,9 @@ Default mapping:
 
 Primary delivery path:
 
-`turn -> delivery-handoff -> inject structured systemEvent into originating session -> main-session agent decides visible reply`
+`turn -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent(sessionKey=originSession) -> main-session agent decides visible reply`
 
-The injected `systemEvent` already carries the compact mechanical handoff object.
+The transported message already carries the compact mechanical handoff object.
 No separate script consumer is required on the happy path.
 
 
