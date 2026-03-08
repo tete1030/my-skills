@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Design, iterate, and operate an OpenCode execution/monitoring workflow for OpenClaw using a main-session-centered model with visible progress, trigger handling, control-input interpretation, and shared state continuity. Use when building or refining the OpenCode skill, control flow, state model, or experimentation workflow.
+description: Design, iterate, and operate an OpenCode execution/monitoring workflow for OpenClaw using a main-session-centered model with visible progress, trigger handling, control-input interpretation, shared state continuity, and cadence-controlled no-change updates. Use when building or refining the OpenCode skill, its state model, trigger flow, visible progress policy, or experimentation workflow.
 ---
 
 # Opencode
@@ -14,19 +14,104 @@ Keep the main session as the primary decision surface and the primary user-visib
 - Prefer `executionMode = main_session_centered` unless a later design revision explicitly changes it.
 - Keep environment-specific paths, hostnames, credentials, and local lab details **out of the skill package and out of committed docs**.
 
-## Working layout
+## Read order
+
+1. Read `references/execution-model.md` for the overall architecture.
+2. Read `references/control-inputs.md` when changing how user instructions affect execution.
+3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
+
+## Use this skill for four kinds of work
+
+### 1. Design work
+Use this skill to refine:
+- layer responsibilities;
+- control-state modeling;
+- trigger/data-flow behavior;
+- visible progress policy;
+- no-change handling.
+
+### 2. Runtime behavior definition
+Use this skill to decide:
+- what must happen in the main session;
+- what can run in the background;
+- when to produce visible updates;
+- when to stay silent;
+- when to escalate.
+
+### 3. Prototype logic locally
+Use:
+- `scripts/opencode_control_state.py` to prototype control-state and observation merges;
+- `scripts/opencode_decision_gate.py` to prototype visible-update / no-change gating decisions.
+
+### 4. Experimentation support
+Use this skill to prepare generic experiment flows and decision logic.
+Do **not** store machine-specific lab details in the skill itself.
+
+## Operating workflow
+
+### Step 1: Start from the main session
+When refining or operating the system, treat the main session as the default place where:
+- goals are interpreted;
+- user corrections are absorbed;
+- key decisions are made;
+- visible progress is reported.
+
+### Step 2: Normalize user control input
+Interpret user messages as control state when they change:
+- goals;
+- constraints;
+- progress visibility expectations;
+- pause/resume/stop behavior;
+- discussion/execution coupling.
+
+Prefer the simplified control representation unless there is a strong reason to expand it:
+
+```json
+{
+  "executionMode": "main_session_centered"
+}
+```
+
+### Step 3: Consume compact trigger input
+Do not reread full transcripts by default.
+Instead, consume compact deltas from:
+- timed triggers;
+- event triggers;
+- recent status/checkpoint/todo changes;
+- shared state anchors.
+
+### Step 4: Decide visible behavior explicitly
+For each decision opportunity, choose one of these broad outcomes:
+- stay silent;
+- emit a short visible progress update;
+- take a visible corrective action;
+- escalate to a heavier execution or analysis unit.
+
+No-change still enters the decision layer.
+The question is not “did nothing happen?” but “does the user need a visible update or action now?”
+
+### Step 5: Keep heavy work as assistance, not as the narrative owner
+Background workers or subagents may perform heavy work, but:
+- they should not become the primary decision center;
+- they should not own the user-facing narrative;
+- important results should flow back into the main session quickly.
+
+### Step 6: Keep the skill package clean
+Put only runtime-relevant reusable material in the skill package:
+- `SKILL.md`
+- `references/`
+- `scripts/`
+- `assets/` when needed
+
+Keep higher-level design docs, iteration archives, and environment-specific experiment notes outside the skill package.
+
+## Current packaged resources
 
 - `references/execution-model.md` — system model and layer responsibilities.
 - `references/control-inputs.md` — how to interpret user input as control state.
 - `references/state-flow.md` — shared state, trigger flow, and no-change handling.
 - `scripts/opencode_control_state.py` — local helper for iterating on state/control merges.
-
-## How to use this skill while iterating
-
-1. Read `references/execution-model.md` for the overall model.
-2. Read `references/control-inputs.md` when changing how user instructions affect execution.
-3. Read `references/state-flow.md` when changing trigger/state/no-change behavior.
-4. Use `scripts/opencode_control_state.py` to prototype control-state evolution locally.
+- `scripts/opencode_decision_gate.py` — local helper for prototyping visible-update gating and no-change cadence behavior.
 
 ## Packaging guidance
 
