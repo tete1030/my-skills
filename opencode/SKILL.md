@@ -44,7 +44,8 @@ Use:
 - `scripts/opencode_decision_gate.py` to prototype visible-update / no-change gating decisions;
 - `scripts/opencode_cycle.py` to simulate one full control + trigger + decision cycle;
 - `scripts/opencode_api_client.py` to query the known OpenCode API surface;
-- `scripts/opencode_snapshot.py` to build compact remote-state snapshots for the main-session decision loop.
+- `scripts/opencode_snapshot.py` to build compact remote-state snapshots for the main-session decision loop;
+- `scripts/opencode_remote_cycle.py` to simulate one full remote-state -> observation -> decision pass.
 
 ### 4. Experimentation support
 Use this skill to prepare generic experiment flows and decision logic.
@@ -119,6 +120,7 @@ Keep higher-level design docs, iteration archives, and environment-specific expe
 - `scripts/opencode_cycle.py` — single-cycle prototype that merges control input, observation input, and visible-update decisions into one experiment flow.
 - `scripts/opencode_api_client.py` — minimal OpenCode API client for session/status/todo/question/permission access.
 - `scripts/opencode_snapshot.py` — compact snapshot builder that turns remote OpenCode state into main-session-consumable input.
+- `scripts/opencode_remote_cycle.py` — fetch remote OpenCode state, derive a normalized observation, and run one decision cycle against local shared state.
 
 ## Packaging guidance
 
