@@ -45,8 +45,8 @@ class DeliveryHandoffTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "routing": {
-                "originSession": "agent:main:telegram:group:-1003607560565:topic:3348",
-                "originTarget": "telegram:-1003607560565:topic:3348",
+                "originSession": "origin-session-example",
+                "originTarget": "telegram:example-target:topic:example-thread",
                 "mustPreserveOrigin": True,
             },
         }
@@ -62,13 +62,13 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["cronFallback"], "watchdog_only")
         self.assertEqual(
             result["openclawDelivery"]["systemEventTemplate"]["sessionKey"],
-            "agent:main:telegram:group:-1003607560565:topic:3348",
+            "origin-session-example",
         )
         self.assertEqual(
             result["openclawDelivery"]["watchdogCronTemplate"],
             {
                 "sessionTarget": "main",
-                "sessionKey": "agent:main:telegram:group:-1003607560565:topic:3348",
+                "sessionKey": "origin-session-example",
                 "payload": result["openclawDelivery"]["systemEventTemplate"]["payload"],
             },
         )
@@ -106,7 +106,7 @@ class DeliveryHandoffTests(unittest.TestCase):
             },
             "routing": {
                 "originSession": None,
-                "originTarget": "telegram:-1003607560565:topic:3348",
+                "originTarget": "telegram:conflicting-target:topic:other-thread",
                 "mustPreserveOrigin": True,
             },
         }
@@ -141,8 +141,8 @@ class DeliveryHandoffTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "routing": {
-                "originSession": "agent:main:telegram:group:-1003607560565:topic:3348",
-                "originTarget": "telegram:-1003607560565:topic:9999",
+                "originSession": "agent:main:telegram:group:example-target:topic:example-thread",
+                "originTarget": "telegram:conflicting-target:topic:other-thread",
                 "mustPreserveOrigin": True,
             },
         }
@@ -154,7 +154,7 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["reason"], "origin_route_conflict")
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
         self.assertIsNone(result["openclawDelivery"]["watchdogCronTemplate"])
-        self.assertEqual(result["routing"]["originTarget"], "telegram:-1003607560565:topic:9999")
+        self.assertEqual(result["routing"]["originTarget"], "telegram:conflicting-target:topic:other-thread")
 
     def test_silent_turn_stays_skip_and_never_builds_templates(self):
         agent_input = {
@@ -174,8 +174,8 @@ class DeliveryHandoffTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "routing": {
-                "originSession": "agent:main:telegram:group:-1003607560565:topic:3348",
-                "originTarget": "telegram:-1003607560565:topic:3348",
+                "originSession": "origin-session-example",
+                "originTarget": "telegram:example-target:topic:example-thread",
                 "mustPreserveOrigin": True,
             },
         }
@@ -210,8 +210,8 @@ class DeliveryHandoffTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "routing": {
-                "originSession": "agent:main:telegram:group:-1003607560565:topic:3348",
-                "originTarget": "telegram:-1003607560565:topic:3348",
+                "originSession": "origin-session-example",
+                "originTarget": "telegram:example-target:topic:example-thread",
                 "mustPreserveOrigin": True,
             },
         }

@@ -81,7 +81,7 @@ When `routeStatus=ready`, the adapter emits the **primary** origin-session injec
 
 ```json
 {
-  "sessionKey": "agent:main:telegram:group:-1003607560565:topic:3348",
+  "sessionKey": "origin-session-example",
   "payload": {
     "kind": "systemEvent",
     "text": "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1\n{ ... }"
@@ -106,7 +106,7 @@ When `routeStatus=ready`, the adapter also emits a **fallback-only** cron-shaped
 ```json
 {
   "sessionTarget": "main",
-  "sessionKey": "agent:main:telegram:group:-1003607560565:topic:3348",
+  "sessionKey": "origin-session-example",
   "payload": {
     "kind": "systemEvent",
     "text": "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1\n{ ... }"
