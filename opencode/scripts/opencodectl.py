@@ -136,6 +136,32 @@ def cmd_openclaw_agent_call(args) -> int:
     return run_json("opencode_openclaw_agent_call.py", command)
 
 
+def cmd_watch(args) -> int:
+    command = [
+        "--base-url", args.base_url,
+        "--session-id", args.session_id,
+        "--state", args.state,
+        "--timeout", str(args.timeout),
+        "--message-limit", str(args.message_limit),
+        "--no-change-visible-after-min", str(args.no_change_visible_after_min),
+        "--interval-sec", str(args.interval_sec),
+    ]
+    if args.origin_session:
+        command += ["--origin-session", args.origin_session]
+    if args.origin_target:
+        command += ["--origin-target", args.origin_target]
+    if args.token:
+        command += ["--token", args.token]
+    if args.loop:
+        command.append("--loop")
+    if args.live:
+        command.append("--live")
+
+    script = SCRIPT_DIR / "opencode_watch_runner.py"
+    proc = subprocess.run([PY, str(script), *command])
+    return proc.returncode
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Unified control surface for the opencode skill prototypes. Happy-path turn output is structured facts plus cadence and delivery metadata."
@@ -239,6 +265,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_oac.add_argument("--expect-final", action="store_true")
     p_oac.add_argument("--timeout-ms", type=int, default=10000)
     p_oac.set_defaults(func=cmd_openclaw_agent_call)
+
+    p_watch = sub.add_parser("watch", help="Run the tiny single-session watcher MVP over turn -> delivery-handoff -> openclaw-agent-call.")
+    p_watch.add_argument("--base-url", required=True)
+    p_watch.add_argument("--session-id", required=True)
+    p_watch.add_argument("--state", required=True)
+    p_watch.add_argument("--origin-session")
+    p_watch.add_argument("--origin-target")
+    p_watch.add_argument("--token")
+    p_watch.add_argument("--timeout", type=int, default=20)
+    p_watch.add_argument("--message-limit", type=int, default=10)
+    p_watch.add_argument("--no-change-visible-after-min", type=int, default=30)
+    p_watch.add_argument("--interval-sec", type=int, default=60)
+    p_watch.add_argument("--loop", action="store_true")
+    p_watch.add_argument("--live", action="store_true")
+    p_watch.set_defaults(func=cmd_watch)
 
     return p
 

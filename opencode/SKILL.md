@@ -87,6 +87,21 @@ The intended consumption order is:
 
 `turn -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent(sessionKey=originSession) -> main-session agent decides visible reply`
 
+For the deliberately tiny single-session watcher MVP, use `watch` so the chain stays the same while one local state file also remembers the last executed handoff key:
+
+```bash
+python3 scripts/opencodectl.py watch \
+  --base-url <url> \
+  --session-id <session-id> \
+  --state .local/opencode-watch-state.json \
+  --origin-session <origin-session> \
+  --origin-target <origin-target>
+```
+
+Add `--live` to actually execute the ready `openclaw gateway call agent` handoff.
+Add `--loop --interval-sec 60` for fixed-interval polling.
+Default mode is one dry-run step, which is the safest way to verify the session id, origin routing, and duplicate suppression state before turning it live.
+
 Cron may reuse the same structured payload only as a watchdog/safety net.
 It is not the primary consumer.
 
