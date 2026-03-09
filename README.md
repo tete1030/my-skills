@@ -12,15 +12,25 @@ OpenClaw skills and related design docs.
 
 The skill package is intentionally isolated from the higher-level design docs so the skill can evolve without forcing all design/iteration material into the runtime skill payload.
 
-## OpenCode Manager (Phase 1)
+## OpenCode Manager (Phase 2)
 
-Use the manager entrypoint for the new Phase 1 session/watcher workflow:
+Use the manager entrypoint for the current session/watcher workflow:
 
 - `python3 opencode/scripts/opencode_manager.py start ...`
 - `python3 opencode/scripts/opencode_manager.py attach ...`
+- `python3 opencode/scripts/opencode_manager.py continue ...`
+- `python3 opencode/scripts/opencode_manager.py stop-watcher ...`
+- `python3 opencode/scripts/opencode_manager.py detach ...`
 - `python3 opencode/scripts/opencode_manager.py list-sessions ...`
 - `python3 opencode/scripts/opencode_manager.py inspect ...`
 - `python3 opencode/scripts/opencode_manager.py list-watchers ...`
+
+Notes:
+
+- `continue` sends a follow-up prompt to an existing OpenCode session and can `--ensure-watcher` for that session.
+- `stop-watcher` stops a running watcher cleanly but keeps the OpenCode session.
+- `detach` removes the watcher binding without deleting the OpenCode session.
+- Registry refresh now also recovers watcher metadata from local watcher dirs/config/state/logs under `.local/opencode-manager/...` and clears stale logical locks when the recorded watcher process is no longer the matching runtime.
 
 Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
 Manager-facing JSON/config fields keep the naming split explicit:

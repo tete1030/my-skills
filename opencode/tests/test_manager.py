@@ -1,10 +1,10 @@
-import json
-import sys
 import tempfile
 import unittest
 from argparse import Namespace
 from pathlib import Path
 from unittest import mock
+
+import sys
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -13,15 +13,70 @@ from opencode_manager import (  # noqa: E402
     build_manager_watcher_config,
     build_parser,
     build_watcher_summary,
+    continue_command,
     create_watcher_entry,
+    detach_command,
     list_watchers_command,
     refresh_registry_entry,
     save_json_object,
     start_or_attach_watcher,
+    stop_watcher_command,
 )
 
 
 class OpenCodeManagerTests(unittest.TestCase):
+    def _runtime_map(self, config_path: Path, pid: int = 12345) -> dict[str, dict[str, object]]:
+        resolved = str(config_path.resolve())
+        return {
+            resolved: {
+                "pid": pid,
+                "configPath": resolved,
+                "command": f"python {SCRIPT_DIR / 'opencode_watch_runtime.py'} --config {resolved}",
+            }
+        }
+
+    def _write_registry_running_entry(self, tmpdir: str, *, watcher_id: str = "ow_demo123", opencode_session_id: str = "ses_demo") -> tuple[Path, Path, Path]:
+        registry_path = Path(tmpdir) / "registry.json"
+        watcher_dir = Path(tmpdir) / "watchers" / watcher_id
+        config_path = watcher_dir / "config.json"
+        state_path = watcher_dir / "state.json"
+        log_path = watcher_dir / "watch.log"
+        save_json_object(
+            config_path,
+            {
+                "opencodeBaseUrl": "http://127.0.0.1:4096",
+                "opencodeSessionId": opencode_session_id,
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "watchStatePath": str(state_path),
+                "watchLogPath": str(log_path),
+                "watchTimeoutSec": 20,
+                "watchMessageLimit": 10,
+                "watchIntervalSec": 60,
+                "watchLive": False,
+                "idleTimeoutSec": 900,
+            },
+        )
+        save_json_object(registry_path, {
+            "kind": "opencode_manager_registry_v1",
+            "watchers": [
+                {
+                    "watcherId": watcher_id,
+                    "watcherStatus": "running",
+                    "watchProcessId": 12345,
+                    "opencodeSessionId": opencode_session_id,
+                    "opencodeWorkspace": "/tmp/demo-workspace",
+                    "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                    "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                    "watcherStatePath": str(state_path),
+                    "watcherConfigPath": str(config_path),
+                    "watcherLogPath": str(log_path),
+                }
+            ],
+        })
+        return registry_path, config_path, state_path
+
     def test_create_watcher_entry_uses_explicit_session_names(self):
         entry = create_watcher_entry(
             watcher_id="ow_demo123",
@@ -82,38 +137,42 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watcherLogPath": str(Path(tmpdir) / "watch.log"),
             }
 
-            refreshed = refresh_registry_entry(entry)
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value={}):
+                refreshed = refresh_registry_entry(entry)
 
             self.assertEqual(refreshed["watcherStatus"], "exited")
             self.assertEqual(refreshed["watchExitReason"], "idle_timeout:terminal_status:completed")
             self.assertEqual(refreshed["lastOpencodeStatus"], "completed")
             self.assertEqual(refreshed["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
 
+    def test_refresh_registry_entry_marks_stale_process_reference_when_pid_alive_but_runtime_missing(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            entry = {
+                "watcherId": "ow_demo123",
+                "watcherStatus": "running",
+                "watchProcessId": 12345,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "watcherStatePath": str(Path(tmpdir) / "state.json"),
+                "watcherConfigPath": str(Path(tmpdir) / "config.json"),
+                "watcherLogPath": str(Path(tmpdir) / "watch.log"),
+            }
+
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value={}), mock.patch(
+                "opencode_manager.process_is_alive", return_value=True
+            ):
+                refreshed = refresh_registry_entry(entry)
+
+            self.assertEqual(refreshed["watcherStatus"], "exited")
+            self.assertEqual(refreshed["watchExitReason"], "stale_process_reference")
+
     def test_start_or_attach_watcher_refuses_duplicate_active_lock(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            registry_path = Path(tmpdir) / "registry.json"
-            save_json_object(
-                registry_path,
-                {
-                    "kind": "opencode_manager_registry_v1",
-                    "watchers": [
-                        {
-                            "watcherId": "ow_existing",
-                            "watcherStatus": "running",
-                            "watchProcessId": 12345,
-                            "opencodeSessionId": "ses_demo",
-                            "opencodeWorkspace": "/tmp/demo-workspace",
-                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
-                            "watcherStatePath": str(Path(tmpdir) / "state.json"),
-                            "watcherConfigPath": str(Path(tmpdir) / "config.json"),
-                            "watcherLogPath": str(Path(tmpdir) / "watch.log"),
-                        }
-                    ],
-                },
-            )
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
 
-            with mock.patch("opencode_manager.process_is_alive", return_value=True):
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)):
                 with self.assertRaisesRegex(RuntimeError, "watcher lock active"):
                     start_or_attach_watcher(
                         registry_path=registry_path,
@@ -133,33 +192,10 @@ class OpenCodeManagerTests(unittest.TestCase):
 
     def test_list_watchers_reports_openclaw_binding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
-            registry_path = Path(tmpdir) / "registry.json"
-            save_json_object(
-                registry_path,
-                {
-                    "kind": "opencode_manager_registry_v1",
-                    "watchers": [
-                        {
-                            "watcherId": "ow_demo123",
-                            "watcherStatus": "running",
-                            "watchProcessId": 12345,
-                            "watchProcessAlive": True,
-                            "opencodeSessionId": "ses_demo",
-                            "opencodeWorkspace": "/tmp/demo-workspace",
-                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
-                            "watchIntervalSec": 60,
-                            "idleTimeoutSec": 900,
-                            "watcherConfigPath": str(Path(tmpdir) / "config.json"),
-                            "watcherStatePath": str(Path(tmpdir) / "state.json"),
-                            "watcherLogPath": str(Path(tmpdir) / "watch.log"),
-                        }
-                    ],
-                },
-            )
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
             args = Namespace(registry_path=str(registry_path), include_exited=False)
 
-            with mock.patch("opencode_manager.process_is_alive", return_value=True):
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)):
                 result = list_watchers_command(args)
 
             self.assertEqual(result["watcherCount"], 1)
@@ -167,24 +203,185 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(watcher["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
             self.assertEqual(watcher["opencodeSessionId"], "ses_demo")
 
-    def test_parser_exposes_phase1_subcommands(self):
+    def test_list_watchers_recovers_missing_registry_entry_from_watcher_dir(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            watcher_dir = Path(tmpdir) / "watchers" / "ow_recovered"
+            config_path = watcher_dir / "config.json"
+            state_path = watcher_dir / "state.json"
+            log_path = watcher_dir / "watch.log"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            save_json_object(
+                config_path,
+                {
+                    "opencodeBaseUrl": "http://127.0.0.1:4096",
+                    "opencodeSessionId": "ses_recovered",
+                    "opencodeWorkspace": "/tmp/demo-workspace",
+                    "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                    "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                    "watchStatePath": str(state_path),
+                    "watchLogPath": str(log_path),
+                    "watchTimeoutSec": 20,
+                    "watchMessageLimit": 10,
+                    "watchIntervalSec": 60,
+                    "watchLive": False,
+                    "idleTimeoutSec": 900,
+                },
+            )
+            save_json_object(state_path, {"watchRunner": {"lastRunAt": "2026-03-09T10:00:00+00:00"}})
+            log_path.write_text('{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:00:00+00:00"}\n')
+
+            args = Namespace(registry_path=str(registry_path), include_exited=False)
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path, pid=54321)):
+                result = list_watchers_command(args)
+
+            self.assertEqual(result["watcherCount"], 1)
+            watcher = result["watchers"][0]
+            self.assertEqual(watcher["watcherId"], "ow_recovered")
+            self.assertEqual(watcher["opencodeSessionId"], "ses_recovered")
+            self.assertEqual(watcher["watchProcessId"], 54321)
+
+    def test_continue_command_can_ensure_watcher_using_previous_binding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(
+                registry_path,
+                {
+                    "kind": "opencode_manager_registry_v1",
+                    "watchers": [
+                        {
+                            "watcherId": "ow_old",
+                            "watcherStatus": "exited",
+                            "opencodeSessionId": "ses_demo",
+                            "opencodeWorkspace": "/tmp/demo-workspace",
+                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                            "watchLive": True,
+                            "watchIntervalSec": 15,
+                            "idleTimeoutSec": 45,
+                            "watchMessageLimit": 8,
+                            "watchTimeoutSec": 25,
+                            "watcherConfigPath": str(Path(tmpdir) / "watchers" / "ow_old" / "config.json"),
+                            "watcherStatePath": str(Path(tmpdir) / "watchers" / "ow_old" / "state.json"),
+                            "watcherLogPath": str(Path(tmpdir) / "watchers" / "ow_old" / "watch.log"),
+                        }
+                    ],
+                },
+            )
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                ensure_watcher=True,
+                openclaw_session_key=None,
+                openclaw_delivery_target=None,
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                registry_path=str(registry_path),
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher) as mocked_start:
+                result = continue_command(args)
+
+            mocked_start.assert_called_once()
+            self.assertEqual(mocked_start.call_args.kwargs["openclaw_session_key"], "agent:main:telegram:group:-100123:topic:42")
+            self.assertEqual(result["watcher"]["watcherId"], "ow_new")
+            fake_client.prompt_session.assert_called_once()
+
+    def test_stop_watcher_updates_registry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, state_path = self._write_registry_running_entry(tmpdir, watcher_id="ow_stop")
+            args = Namespace(
+                registry_path=str(registry_path),
+                watcher_id="ow_stop",
+                opencode_session_id=None,
+                stop_timeout_sec=5,
+            )
+
+            with mock.patch(
+                "opencode_manager.list_watch_runtime_processes",
+                side_effect=[self._runtime_map(config_path), self._runtime_map(config_path), {}],
+            ), mock.patch(
+                "opencode_manager.stop_runtime_process_by_config", return_value=(True, 12345, "SIGINT")
+            ):
+                result = stop_watcher_command(args)
+
+            self.assertTrue(result["stopped"])
+            self.assertEqual(result["watcherCount"], 1)
+            self.assertEqual(result["watchers"][0]["watchExitReason"], "manager_stop_requested")
+            registry = __import__("opencode_manager").load_json_object(registry_path)
+            self.assertEqual(registry["watchers"][0]["watcherStatus"], "exited")
+            self.assertEqual(registry["watchers"][0]["watchExitReason"], "manager_stop_requested")
+            state = __import__("opencode_manager").load_json_object(state_path)
+            self.assertEqual(state["watchRunner"]["lastExitReason"], "manager_stop_requested")
+
+    def test_detach_updates_registry(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, state_path = self._write_registry_running_entry(tmpdir, watcher_id="ow_detach")
+            args = Namespace(
+                registry_path=str(registry_path),
+                watcher_id=None,
+                opencode_session_id="ses_demo",
+                stop_timeout_sec=5,
+            )
+
+            with mock.patch(
+                "opencode_manager.list_watch_runtime_processes",
+                side_effect=[self._runtime_map(config_path), self._runtime_map(config_path), {}],
+            ), mock.patch(
+                "opencode_manager.stop_runtime_process_by_config", return_value=(True, 12345, "SIGINT")
+            ):
+                result = detach_command(args)
+
+            self.assertTrue(result["detached"])
+            self.assertEqual(result["watcherCount"], 1)
+            self.assertEqual(result["watchers"][0]["watchExitReason"], "manager_detach")
+            registry = __import__("opencode_manager").load_json_object(registry_path)
+            self.assertEqual(registry["watchers"][0]["watcherStatus"], "exited")
+            self.assertEqual(registry["watchers"][0]["watchExitReason"], "manager_detach")
+            state = __import__("opencode_manager").load_json_object(state_path)
+            self.assertEqual(state["watchRunner"]["lastExitReason"], "manager_detach")
+
+    def test_parser_exposes_phase2_subcommands(self):
         parser = build_parser()
-        parsed = parser.parse_args(
+        parsed_continue = parser.parse_args(
             [
-                "start",
+                "continue",
                 "--opencode-base-url",
                 "http://127.0.0.1:4096",
-                "--opencode-workspace",
-                "/tmp/demo-workspace",
-                "--openclaw-session-key",
-                "agent:main:telegram:group:-100123:topic:42",
-                "--first-prompt",
-                "hello",
+                "--opencode-session-id",
+                "ses_demo",
+                "--follow-up-prompt",
+                "hello again",
+                "--ensure-watcher",
             ]
         )
-        self.assertEqual(parsed.command, "start")
-        self.assertEqual(parsed.openclaw_session_key, "agent:main:telegram:group:-100123:topic:42")
-        self.assertEqual(parsed.opencode_workspace, "/tmp/demo-workspace")
+        self.assertEqual(parsed_continue.command, "continue")
+        self.assertEqual(parsed_continue.opencode_session_id, "ses_demo")
+        self.assertTrue(parsed_continue.ensure_watcher)
+
+        parsed_stop = parser.parse_args(["stop-watcher", "--watcher-id", "ow_demo123"])
+        self.assertEqual(parsed_stop.command, "stop-watcher")
+        self.assertEqual(parsed_stop.watcher_id, "ow_demo123")
 
     def test_watcher_summary_keeps_explicit_field_names(self):
         summary = build_watcher_summary(
