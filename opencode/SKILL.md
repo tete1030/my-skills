@@ -28,6 +28,13 @@ Field naming is intentional:
 - OpenCode side: `opencodeSessionId`, `opencodeWorkspace`
 - OpenClaw side: `openclawSessionKey`, `openclawDeliveryTarget`
 
+## Workspace-path boundary
+
+Treat `opencodeWorkspace` as an OpenCode-side / remote workspace identifier by default.
+Do **not** `ls`, `stat`, `pwd`, or otherwise preflight that path on the current host just to start, continue, list, or inspect remote OpenCode work.
+Pass the workspace path through to the manager/API unless the task explicitly requires host-side filesystem access or validation.
+Only touch the current host filesystem when the user clearly wants local file access, local validation, or you are intentionally working in a host-side mirror.
+
 ## Exact command surface
 
 For normal usage, use the manager subcommands exactly as implemented:
@@ -171,9 +178,9 @@ Allowed `inspect` cases are narrow:
 
 After `start` or `continue --ensure-watcher`, once the watcher is attached and you have the initial context you need, **stop active progress polling**.
 During normal running, watcher updates are the progress source.
-Manager results now make this explicit with `progressSource`, `agentShouldPoll`, `recommendedNextAction`, and `userFacingAck`.
-If `progressSource=watcher` and `agentShouldPoll=false`, acknowledge that OpenCode work has been handed off to the watcher, then end the turn.
-A typical live handoff uses `recommendedNextAction=wait_for_runtime_updates`.
+Manager results now make this explicit with `progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, and `userFacingAck`.
+If `progressSource=watcher`, `turnShouldEnd=true`, and `disallowImmediateCompletionCheck=true`, completion checking now belongs to `completionCheckOwner=watcher_runtime_updates`, not to the current turn.
+A typical live handoff uses `recommendedNextAction=wait_for_runtime_updates` and `recommendedUserVisibleAction=acknowledge_handoff_then_end_turn`.
 Do **not** use `sleep + inspect` or repeated `inspect` calls to wait for completion, silence, or stalls.
 
 Anti-patterns:

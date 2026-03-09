@@ -559,6 +559,10 @@ def build_agent_handoff_contract(
             "progressSource": "watcher",
             "agentShouldPoll": False,
             "recommendedNextAction": "wait_for_runtime_updates",
+            "turnShouldEnd": True,
+            "completionCheckOwner": "watcher_runtime_updates",
+            "disallowImmediateCompletionCheck": True,
+            "recommendedUserVisibleAction": "acknowledge_handoff_then_end_turn",
             "userFacingAck": WATCHER_HANDOFF_ACK,
         }
     if watcher_running:
@@ -566,6 +570,10 @@ def build_agent_handoff_contract(
             "progressSource": "manager_result_only",
             "agentShouldPoll": False,
             "recommendedNextAction": "acknowledge_no_live_watcher",
+            "turnShouldEnd": True,
+            "completionCheckOwner": "future_explicit_turn",
+            "disallowImmediateCompletionCheck": False,
+            "recommendedUserVisibleAction": "acknowledge_no_live_watcher",
             "userFacingAck": NON_LIVE_WATCHER_ACK,
         }
     if watcher_requested:
@@ -573,12 +581,20 @@ def build_agent_handoff_contract(
             "progressSource": "manager_result_only",
             "agentShouldPoll": False,
             "recommendedNextAction": "acknowledge_missing_watcher",
+            "turnShouldEnd": True,
+            "completionCheckOwner": "future_explicit_turn",
+            "disallowImmediateCompletionCheck": False,
+            "recommendedUserVisibleAction": "acknowledge_missing_watcher",
             "userFacingAck": MISSING_WATCHER_ACK,
         }
     return {
         "progressSource": "manager_result_only",
         "agentShouldPoll": False,
         "recommendedNextAction": "acknowledge_async_without_watcher",
+        "turnShouldEnd": True,
+        "completionCheckOwner": "future_explicit_turn",
+        "disallowImmediateCompletionCheck": False,
+        "recommendedUserVisibleAction": "acknowledge_async_without_watcher",
         "userFacingAck": NO_WATCHER_ACK,
     }
 
