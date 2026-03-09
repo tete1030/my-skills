@@ -1,0 +1,12 @@
+{
+  "base_url": "http://127.0.0.1:4096",
+  "session_id": "ses_replace_me",
+  "origin_session": "agent:main:<channel>:<target>",
+  "origin_target": "<channel>:<target>",
+  "token_env": "OPENCODE_TOKEN",
+  "timeout": 20,
+  "message_limit": 10,
+  "no_change_visible_after_min": 30,
+  "interval_sec": 60,
+  "live": false
+}

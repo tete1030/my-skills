@@ -87,7 +87,30 @@ The intended consumption order is:
 
 `turn -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent(sessionKey=originSession) -> main-session agent decides visible reply`
 
-For the deliberately tiny single-session watcher MVP, use `watch` so the chain stays the same while one local state file also remembers the last executed handoff key:
+For the deliberately tiny single-session watcher MVP, `watch` is still the underlying loop, but repeated long-run operation should prefer the thin runtime wrapper so local config, state, and logs stay in one ignored runtime directory.
+
+Tracked example config:
+
+```bash
+mkdir -p ../.local/opencode/watch/default
+cp examples/watch-runtime.example.json ../.local/opencode/watch/default/config.json
+```
+
+Long-run entrypoint:
+
+```bash
+python3 scripts/opencode_watch_runtime.py --name default
+```
+
+Default convention for a named runtime profile:
+
+- config: `.local/opencode/watch/<name>/config.json`
+- state: `.local/opencode/watch/<name>/state.json`
+- log: `.local/opencode/watch/<name>/watch.log`
+
+Use `--once` for a single dry-run-style step, or `--live` / `--dry-run` to override the config for that run.
+
+If you need the raw lower-level command directly, `watch` still works the same way:
 
 ```bash
 python3 scripts/opencodectl.py watch \
