@@ -166,12 +166,21 @@ This layer must not:
 4. facts
 5. cadence
 
+Consumption rules:
+
+- The injected payload is **internal runtime context**. The user does **not** see it.
+- Translate the facts into normal user language; do not restate headers, event tags, JSON, or watcher/debug phrasing.
+- Do not mirror every runtime event with a visible chat reply.
+- For the same task cluster, prefer one useful progress update and one final completion/status update.
+- Repeated `completed`, same-state, or no-new-user-value updates should usually stay silent.
+- If you do reply, structure it as: (1) what was just done, (2) what evidence was seen, (3) what that means for the user/task.
+
 Default mapping:
 
 - `shouldSend=false` -> usually stay silent
-- `shouldSend=true` + running + changed -> brief progress update
-- `shouldSend=true` + running + no-change -> brief heartbeat
-- `shouldSend=true` + blocked/failed/completed -> explicit status update
+- `shouldSend=true` + running + changed -> brief progress update if it adds user value
+- `shouldSend=true` + running + no-change -> usually stay silent unless cadence specifically calls for a helpful heartbeat
+- `shouldSend=true` + blocked/failed/completed -> explicit status update, but avoid repeated completion replies for the same outcome
 
 Primary delivery path:
 

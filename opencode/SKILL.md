@@ -163,14 +163,26 @@ Prefer this manager flow unless you are actively building or debugging the runti
 Watcher-delivered runtime updates are **internal progress inputs** for the main OpenClaw agent, not prewritten chat replies.
 Treat them like structured background-worker callbacks.
 
+Important: the user does **not** see the injected runtime payload.
+They only see your visible reply in chat.
+Do not assume shared visibility of `systemEvent` text, JSON, headers, event tags, or watcher/debug wording.
+
 Rules:
 
 - `systemEvent` / `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` payloads are transport envelopes, not user-facing text.
 - `status`, `phase`, `latestMeaningfulPreview`, `reason`, and cadence are the important facts.
-- Do **not** echo raw JSON, transport headers, or mechanical runtime wording back to the user.
+- Translate runtime facts into user language; do **not** echo raw JSON, transport headers, event tags, or mechanical watcher wording.
 - Do **not** reply with “received runtime update” or narrate watcher plumbing unless the user explicitly asks about the plumbing.
-- If a visible reply is needed, write a natural task-centered update in the existing conversation.
+- Do **not** restate progress event-by-event.
+- For one task cluster, prefer **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
+- Repeated `completed` / same-state / no-new-user-value updates should usually stay silent.
 - If no visible reply is needed, stay silent; the runtime input still matters internally.
+
+When a visible reply is needed, structure it in this order:
+
+1. what was just done
+2. what evidence was seen
+3. what that means for the user/task
 
 ### Noise handling
 
@@ -186,7 +198,7 @@ Prefer this order when understanding what happened:
 4. raw `eventLedger` only for debugging or ambiguity resolution
 
 Do not turn every tool call or plugin blip into a visible chat update.
-User-facing replies should summarize the task state, not the transport trace.
+User-facing replies should summarize task state and user impact, not the transport trace.
 
 ## Use lower-level runtime tools only when needed
 
