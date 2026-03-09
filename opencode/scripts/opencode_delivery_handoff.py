@@ -12,6 +12,7 @@ from opencode_agent_turn_input import (
     assert_agent_input_boundary,
     build_agent_turn_input,
 )
+from opencode_task_cluster import ALLOWED_REPLY_POLICY_KEYS, ALLOWED_TASK_CLUSTER_KEYS
 
 ALLOWED_HANDOFF_TOP_LEVEL_KEYS = frozenset(set(ALLOWED_AGENT_INPUT_KEYS) | {"openclawDelivery"})
 ALLOWED_OPENCLAW_DELIVERY_KEYS = frozenset({
@@ -265,6 +266,14 @@ def assert_handoff_boundary(result: dict) -> dict:
     routing_keys = set(result["routing"])
     if routing_keys != ALLOWED_ROUTING_KEYS:
         raise ValueError(f"delivery-handoff boundary violation: unexpected routing keys {sorted(routing_keys - ALLOWED_ROUTING_KEYS)}")
+
+    task_cluster_keys = set(result["taskCluster"])
+    if task_cluster_keys != ALLOWED_TASK_CLUSTER_KEYS:
+        raise ValueError(f"delivery-handoff boundary violation: unexpected taskCluster keys {sorted(task_cluster_keys - ALLOWED_TASK_CLUSTER_KEYS)}")
+
+    reply_policy_keys = set(result["replyPolicy"])
+    if reply_policy_keys != ALLOWED_REPLY_POLICY_KEYS:
+        raise ValueError(f"delivery-handoff boundary violation: unexpected replyPolicy keys {sorted(reply_policy_keys - ALLOWED_REPLY_POLICY_KEYS)}")
 
     delivery_keys = set(result["openclawDelivery"])
     if delivery_keys != ALLOWED_OPENCLAW_DELIVERY_KEYS:

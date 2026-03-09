@@ -40,12 +40,22 @@ def load_json_input(value: str):
 def build_agent_message(system_event_text: str) -> str:
     envelope = decode_system_event_text(system_event_text)
     consumption = envelope["consumptionPolicy"]
+    agent_input = envelope["agentInput"]
+    task_cluster = agent_input.get("taskCluster") or {}
+    reply_policy = agent_input.get("replyPolicy") or {}
     avoid = ", ".join(item.replace("_", " ") for item in consumption["avoid"])
+    cluster_guidance = ""
+    if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
+        cluster_guidance = (
+            "For the same task cluster, if you already handled a later or higher-rank conclusion, "
+            "keep weaker or older superseded updates internal and do not send another visible reply.\n"
+        )
     return (
         "Runtime task update for the current conversation.\n"
         f"Treat the payload below as {consumption['treatAs'].replace('_', ' ')}.\n"
         "If you reply visibly, continue the task conversation naturally for the user.\n"
-        f"Avoid mentioning {avoid} unless the user explicitly asks.\n\n"
+        + cluster_guidance
+        + f"Avoid mentioning {avoid} unless the user explicitly asks.\n\n"
         + system_event_text
     )
 

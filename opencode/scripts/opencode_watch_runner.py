@@ -8,6 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from opencode_task_cluster import normalize_task_cluster, task_cluster_is_superseded
+
 PY = sys.executable
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPENCODECTL = SCRIPT_DIR / "opencodectl.py"
@@ -76,9 +78,27 @@ def action_key_from_agent_call(agent_call: dict[str, Any]) -> str | None:
     return None
 
 
+def task_cluster_head_for_key(watch_state: dict[str, Any], task_cluster: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_task_cluster(task_cluster)
+    cluster_heads = watch_state.get("clusterHeads") if isinstance(watch_state.get("clusterHeads"), dict) else {}
+    return normalize_task_cluster(cluster_heads.get(normalized.get("key")))
+
+
+def update_cluster_heads(watch_state: dict[str, Any], task_cluster: dict[str, Any]) -> dict[str, Any]:
+    normalized = normalize_task_cluster(task_cluster)
+    if not normalized.get("key"):
+        return dict(watch_state.get("clusterHeads") or {})
+    cluster_heads = dict(watch_state.get("clusterHeads") or {})
+    current_head = normalize_task_cluster(cluster_heads.get(normalized["key"]))
+    if not current_head.get("key") or task_cluster_is_superseded(current_head, normalized):
+        cluster_heads[normalized["key"]] = normalized
+    return cluster_heads
+
+
 def watch_activity_signature(turn: dict[str, Any], agent_call: dict[str, Any]) -> str:
     fact = turn.get("factSkeleton") if isinstance(turn.get("factSkeleton"), dict) else {}
     cadence = turn.get("cadence") if isinstance(turn.get("cadence"), dict) else {}
+    task_cluster = normalize_task_cluster(turn.get("taskCluster"))
     signature_payload = {
         "status": fact.get("status"),
         "phase": fact.get("phase"),
@@ -87,6 +107,9 @@ def watch_activity_signature(turn: dict[str, Any], agent_call: dict[str, Any]) -
         "actionKey": action_key_from_agent_call(agent_call),
         "routeStatus": agent_call.get("routeStatus"),
         "deliveryAction": agent_call.get("deliveryAction"),
+        "taskClusterKey": task_cluster.get("key"),
+        "clusterStateRank": task_cluster.get("clusterStateRank"),
+        "sourceUpdateMs": task_cluster.get("sourceUpdateMs"),
     }
     return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True)
 
@@ -99,10 +122,17 @@ def idle_timeout_reason(turn: dict[str, Any]) -> str | None:
     return None
 
 
-def decide_watch_action(agent_call: dict[str, Any], watch_state: dict[str, Any], *, live: bool) -> dict[str, Any]:
+def decide_watch_action(
+    agent_call: dict[str, Any],
+    watch_state: dict[str, Any],
+    *,
+    live: bool,
+    task_cluster: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     delivery_action = agent_call.get("deliveryAction")
     route_status = agent_call.get("routeStatus")
     action_key = action_key_from_agent_call(agent_call)
+    normalized_cluster = normalize_task_cluster(task_cluster)
 
     if delivery_action != "inject" or route_status != "ready":
         return {
@@ -110,6 +140,7 @@ def decide_watch_action(agent_call: dict[str, Any], watch_state: dict[str, Any],
             "operation": "skip",
             "shouldExecute": False,
             "duplicateSuppressed": False,
+            "supersededSuppressed": False,
             "actionKey": action_key,
             "reason": agent_call.get("reason") or "not_ready",
         }
@@ -120,15 +151,30 @@ def decide_watch_action(agent_call: dict[str, Any], watch_state: dict[str, Any],
             "operation": "skip_duplicate",
             "shouldExecute": False,
             "duplicateSuppressed": True,
+            "supersededSuppressed": False,
             "actionKey": action_key,
             "reason": "duplicate_action_key",
         }
+
+    if live and normalized_cluster.get("key"):
+        current_head = task_cluster_head_for_key(watch_state, normalized_cluster)
+        if current_head.get("key") and task_cluster_is_superseded(normalized_cluster, current_head):
+            return {
+                "mode": "live",
+                "operation": "skip_superseded",
+                "shouldExecute": False,
+                "duplicateSuppressed": False,
+                "supersededSuppressed": True,
+                "actionKey": action_key,
+                "reason": "superseded_task_cluster_update",
+            }
 
     return {
         "mode": "live" if live else "dry-run",
         "operation": "execute" if live else "plan",
         "shouldExecute": bool(live),
         "duplicateSuppressed": False,
+        "supersededSuppressed": False,
         "actionKey": action_key,
         "reason": "ready_inject_live" if live else "ready_inject_dry_run",
     }
@@ -141,6 +187,7 @@ def update_watch_state(
     watch_action: dict[str, Any],
     agent_call: dict[str, Any],
     turn: dict[str, Any],
+    task_cluster: dict[str, Any] | None = None,
     idle_timeout_sec: int = 0,
 ) -> dict[str, Any]:
     current_time = now_iso()
@@ -152,6 +199,7 @@ def update_watch_state(
 
     fact = turn.get("factSkeleton") if isinstance(turn.get("factSkeleton"), dict) else {}
     cadence = turn.get("cadence") if isinstance(turn.get("cadence"), dict) else {}
+    normalized_cluster = normalize_task_cluster(task_cluster if task_cluster is not None else turn.get("taskCluster"))
     status = fact.get("status")
     idle_reason = idle_timeout_reason(turn)
 
@@ -165,11 +213,13 @@ def update_watch_state(
         "lastRouteStatus": agent_call.get("routeStatus"),
         "lastDeliveryAction": agent_call.get("deliveryAction"),
         "lastDuplicateSuppressed": bool(watch_action.get("duplicateSuppressed")),
+        "lastSupersededSuppressed": bool(watch_action.get("supersededSuppressed")),
         "lastFactStatus": status,
         "lastFactPhase": fact.get("phase"),
         "lastPreview": fact.get("latestMeaningfulPreview"),
         "lastCadenceDecision": cadence.get("decision"),
         "lastNoChange": cadence.get("noChange"),
+        "lastTaskClusterKey": normalized_cluster.get("key"),
         "idleTimeoutSec": idle_timeout_sec,
         "lastActivitySignature": activity_signature,
     })
@@ -183,6 +233,7 @@ def update_watch_state(
     if watch_action["operation"] == "execute":
         watch_state["lastExecutedActionKey"] = watch_action.get("actionKey")
         watch_state["lastExecutedAt"] = current_time
+        watch_state["clusterHeads"] = update_cluster_heads(watch_state, normalized_cluster)
 
     if idle_reason:
         previous_idle_reason = watch_state.get("idleEligibleReason")
@@ -243,7 +294,7 @@ def turn_for_handoff(turn: dict[str, Any]) -> dict[str, Any]:
     return {
         key: value
         for key, value in turn.items()
-        if key in {"factSkeleton", "shouldSend", "delivery", "cadence"}
+        if key in {"factSkeleton", "shouldSend", "delivery", "cadence", "taskCluster"}
     }
 
 
@@ -265,7 +316,7 @@ def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
 
     pre_state = load_json_file(state_path)
     watch_state = dict(pre_state.get(WATCH_STATE_KEY) or {})
-    watch_action = decide_watch_action(agent_call, watch_state, live=args.live)
+    watch_action = decide_watch_action(agent_call, watch_state, live=args.live, task_cluster=handoff.get("taskCluster"))
 
     final_agent_call = agent_call
     if watch_action["shouldExecute"]:
@@ -280,6 +331,7 @@ def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
         watch_action=watch_action,
         agent_call=final_agent_call,
         turn=turn,
+        task_cluster=handoff.get("taskCluster"),
         idle_timeout_sec=args.idle_timeout_sec,
     )
 

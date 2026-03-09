@@ -12,6 +12,7 @@ from opencode_agent_turn_input import (  # noqa: E402
     ALLOWED_TOP_LEVEL_KEYS,
     build_agent_turn_input,
 )
+from opencode_task_cluster import ALLOWED_REPLY_POLICY_KEYS, ALLOWED_TASK_CLUSTER_KEYS  # noqa: E402
 
 
 class AgentTurnInputTests(unittest.TestCase):
@@ -34,6 +35,13 @@ class AgentTurnInputTests(unittest.TestCase):
                 "consecutiveNoChangeCount": 0,
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
+            "taskCluster": {
+                "key": "task-cluster-demo",
+                "summary": "Release v0.3.4",
+                "clusterStateRank": 20,
+                "detailRank": 27,
+                "sourceUpdateMs": 123456789,
+            },
         }
 
         result = build_agent_turn_input(turn_result)
@@ -53,6 +61,9 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["facts"]["phase"], "Collect verification status")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
         self.assertEqual(result["routing"]["originSession"], "origin-session-example")
+        self.assertEqual(result["taskCluster"]["key"], "task-cluster-demo")
+        self.assertEqual(result["taskCluster"]["clusterStateRank"], 20)
+        self.assertEqual(result["replyPolicy"]["replyDefault"], "send_if_not_cluster_superseded")
         self.assertNotIn("message", result)
 
     def test_visible_no_change_maps_to_heartbeat_without_preview_requirement(self):
@@ -203,6 +214,8 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertTrue(set(result["mentionFields"]).issubset(ALLOWED_FACT_KEYS))
         self.assertEqual(set(result["cadence"]), ALLOWED_CADENCE_KEYS)
         self.assertEqual(set(result["routing"]), ALLOWED_ROUTING_KEYS)
+        self.assertEqual(set(result["taskCluster"]), ALLOWED_TASK_CLUSTER_KEYS)
+        self.assertEqual(set(result["replyPolicy"]), ALLOWED_REPLY_POLICY_KEYS)
         for forbidden_key in [
             "message",
             "summary",

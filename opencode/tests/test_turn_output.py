@@ -13,13 +13,14 @@ from opencode_session_turn import (  # noqa: E402
     DEBUG_ONLY_TURN_KEYS,
     build_turn_result,
 )
+from opencode_task_cluster import ALLOWED_TASK_CLUSTER_KEYS  # noqa: E402
 
 
 class TurnOutputTests(unittest.TestCase):
     def test_turn_result_emphasizes_fact_skeleton_and_delivery(self):
         payload = {
             "decision": {"decision": "visible_update", "reason": "state_changed"},
-            "observation": {"status": "running", "phase": "Collect verification status", "noChange": False},
+            "observation": {"status": "running", "phase": "Collect verification status", "noChange": False, "lastUpdatedMs": 123456789},
             "after": {
                 "status": "running",
                 "phase": "Collect verification status",
@@ -27,6 +28,7 @@ class TurnOutputTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "snapshot": {
+                "latestUserInputSummary": "Please continue and give me a short summary when done.",
                 "accumulatedEventSummary": "user: Please continue and give me a short summary when done. | text: 已改成结构化事件汇总，并补上回归测试。",
                 "latestAssistantTextPreview": "Released v0.3.4 successfully. Included the usage-label cleanup change.",
                 "latestMessage": {"id": "msg_latest"},
@@ -50,6 +52,9 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(result["delivery"]["originTarget"], "origin-target-example")
         self.assertEqual(result["cadence"]["decision"], "visible_update")
         self.assertFalse(result["cadence"]["noChange"])
+        self.assertIsNotNone(result["taskCluster"]["key"])
+        self.assertEqual(result["taskCluster"]["summary"], "Please continue and give me a short summary when done.")
+        self.assertEqual(result["taskCluster"]["sourceUpdateMs"], 123456789)
         self.assertNotIn("fallback", result)
         self.assertNotIn("payload", result)
         self.assertNotIn("control", result)
@@ -97,6 +102,7 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(set(result["factSkeleton"]), ALLOWED_FACT_SKELETON_KEYS)
         self.assertEqual(set(result["delivery"]), ALLOWED_DELIVERY_KEYS)
         self.assertEqual(set(result["cadence"]), ALLOWED_CADENCE_KEYS)
+        self.assertEqual(set(result["taskCluster"]), ALLOWED_TASK_CLUSTER_KEYS)
         for forbidden_key in ["control", "message", "summary", "headline", "plan", "strategy"]:
             self.assertNotIn(forbidden_key, result)
 

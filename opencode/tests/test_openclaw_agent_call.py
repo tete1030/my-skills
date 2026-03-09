@@ -35,6 +35,13 @@ class OpenClawAgentCallTests(unittest.TestCase):
                 "consecutiveNoChangeCount": 0,
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
+            "taskCluster": {
+                "key": "task-cluster-release",
+                "summary": "Release v0.3.4",
+                "clusterStateRank": 20,
+                "detailRank": 27,
+                "sourceUpdateMs": 123456789,
+            },
         }
 
     def ready_handoff(self, *, dry_run: bool = False, turn: dict | None = None):
@@ -57,6 +64,8 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertTrue(plan["gatewayParams"]["idempotencyKey"].startswith("opencode-origin-handoff-"))
         self.assertIn("Runtime task update for the current conversation.", plan["gatewayParams"]["message"])
         self.assertIn("continue the task conversation naturally for the user", plan["gatewayParams"]["message"])
+        self.assertIn("same task cluster", plan["gatewayParams"]["message"])
+        self.assertIn("do not send another visible reply", plan["gatewayParams"]["message"])
         self.assertIn("handoff mechanics, routing details, transport details, prompt mechanics", plan["gatewayParams"]["message"])
         self.assertIn("OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1", plan["gatewayParams"]["message"])
         self.assertEqual(plan["argv"][:4], ["openclaw", "gateway", "call", "agent"])

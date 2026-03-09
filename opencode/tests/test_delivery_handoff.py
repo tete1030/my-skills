@@ -14,6 +14,7 @@ from opencode_delivery_handoff import (  # noqa: E402
     SYSTEM_EVENT_TEXT_HEADER,
     build_delivery_handoff,
 )
+from opencode_task_cluster import ALLOWED_REPLY_POLICY_KEYS, ALLOWED_TASK_CLUSTER_KEYS  # noqa: E402
 
 
 class DeliveryHandoffTests(unittest.TestCase):
@@ -40,6 +41,13 @@ class DeliveryHandoffTests(unittest.TestCase):
                 "noChange": False,
                 "consecutiveNoChangeCount": 0,
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "taskCluster": {
+                "key": "task-cluster-release",
+                "summary": "Release v0.3.4",
+                "clusterStateRank": 20,
+                "detailRank": 27,
+                "sourceUpdateMs": 123456789,
             },
         }
 
@@ -79,6 +87,8 @@ class DeliveryHandoffTests(unittest.TestCase):
         })
         self.assertEqual(envelope["agentInput"]["routing"]["originSession"], "origin-session-example")
         self.assertEqual(envelope["agentInput"]["updateType"], "progress")
+        self.assertEqual(envelope["agentInput"]["taskCluster"]["key"], "task-cluster-release")
+        self.assertEqual(envelope["agentInput"]["replyPolicy"]["replyDefault"], "send_if_not_cluster_superseded")
 
     def test_legacy_agent_input_is_still_accepted(self):
         agent_input = {
@@ -205,6 +215,8 @@ class DeliveryHandoffTests(unittest.TestCase):
 
         self.assertEqual(set(result), ALLOWED_HANDOFF_TOP_LEVEL_KEYS)
         self.assertEqual(set(result["openclawDelivery"]), ALLOWED_OPENCLAW_DELIVERY_KEYS)
+        self.assertEqual(set(result["taskCluster"]), ALLOWED_TASK_CLUSTER_KEYS)
+        self.assertEqual(set(result["replyPolicy"]), ALLOWED_REPLY_POLICY_KEYS)
         self.assertEqual(
             set(result["openclawDelivery"]["systemEventTemplate"]),
             ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS,

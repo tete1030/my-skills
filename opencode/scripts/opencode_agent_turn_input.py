@@ -3,6 +3,14 @@ import argparse
 import json
 from pathlib import Path
 
+from opencode_task_cluster import (
+    ALLOWED_REPLY_POLICY_KEYS,
+    ALLOWED_TASK_CLUSTER_KEYS,
+    DEFAULT_REPLY_POLICY,
+    normalize_reply_policy,
+    normalize_task_cluster,
+)
+
 # Hard boundary for the agent-consumption layer:
 # - allowed: send/skip recommendation, update classification, compact facts, cadence,
 #   and origin-preserving routing hints;
@@ -21,6 +29,8 @@ ALLOWED_TOP_LEVEL_KEYS = frozenset({
     "facts",
     "cadence",
     "routing",
+    "taskCluster",
+    "replyPolicy",
 })
 ALLOWED_FACT_KEYS = frozenset({"status", "phase", "latestMeaningfulPreview"})
 ALLOWED_CADENCE_KEYS = frozenset({
@@ -95,7 +105,15 @@ def compact_facts(turn_result, fields: list[str]) -> dict:
     return out
 
 
+def normalize_agent_input(agent_input: dict) -> dict:
+    normalized = dict(agent_input)
+    normalized["taskCluster"] = normalize_task_cluster(normalized.get("taskCluster"))
+    normalized["replyPolicy"] = normalize_reply_policy(normalized.get("replyPolicy"))
+    return normalized
+
+
 def assert_agent_input_boundary(agent_input: dict) -> dict:
+    agent_input = normalize_agent_input(agent_input)
     keys = set(agent_input)
     if keys != ALLOWED_TOP_LEVEL_KEYS:
         raise ValueError(f"agent-turn-input boundary violation: unexpected top-level keys {sorted(keys - ALLOWED_TOP_LEVEL_KEYS)}")
@@ -115,6 +133,14 @@ def assert_agent_input_boundary(agent_input: dict) -> dict:
     routing_keys = set(agent_input["routing"])
     if routing_keys != ALLOWED_ROUTING_KEYS:
         raise ValueError(f"agent-turn-input boundary violation: unexpected routing keys {sorted(routing_keys - ALLOWED_ROUTING_KEYS)}")
+
+    task_cluster_keys = set(agent_input["taskCluster"])
+    if task_cluster_keys != ALLOWED_TASK_CLUSTER_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected taskCluster keys {sorted(task_cluster_keys - ALLOWED_TASK_CLUSTER_KEYS)}")
+
+    reply_policy_keys = set(agent_input["replyPolicy"])
+    if reply_policy_keys != ALLOWED_REPLY_POLICY_KEYS:
+        raise ValueError(f"agent-turn-input boundary violation: unexpected replyPolicy keys {sorted(reply_policy_keys - ALLOWED_REPLY_POLICY_KEYS)}")
 
     return agent_input
 
@@ -148,6 +174,8 @@ def build_agent_turn_input(turn_result):
             "originTarget": delivery.get("originTarget"),
             "mustPreserveOrigin": bool(delivery.get("originSession") or delivery.get("originTarget")),
         },
+        "taskCluster": normalize_task_cluster(turn_result.get("taskCluster")),
+        "replyPolicy": dict(DEFAULT_REPLY_POLICY),
     }
     return assert_agent_input_boundary(agent_input)
 

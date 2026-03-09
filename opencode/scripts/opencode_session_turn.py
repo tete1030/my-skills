@@ -5,6 +5,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+from opencode_task_cluster import ALLOWED_TASK_CLUSTER_KEYS, build_task_cluster
+
 PY = sys.executable
 SCRIPT_DIR = Path(__file__).resolve().parent
 
@@ -14,7 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # - caution: control input may influence the decision pass but should not be echoed back as
 #   part of the agent-consumption happy path;
 # - disallowed: rendered user-facing prose, strategy/narrative plans, or helper-context routing.
-ALLOWED_TURN_KEYS = frozenset({"factSkeleton", "shouldSend", "delivery", "cadence"})
+ALLOWED_TURN_KEYS = frozenset({"factSkeleton", "shouldSend", "delivery", "cadence", "taskCluster"})
 DEBUG_ONLY_TURN_KEYS = frozenset({"payload"})
 ALLOWED_FACT_SKELETON_KEYS = frozenset({"status", "phase", "latestMeaningfulPreview", "reason"})
 ALLOWED_DELIVERY_KEYS = frozenset({"originSession", "originTarget"})
@@ -82,6 +84,19 @@ def build_cadence(payload):
     }
 
 
+def build_task_cluster_payload(payload):
+    snapshot = payload.get("snapshot") or {}
+    observation = payload.get("observation") or {}
+    after = payload.get("after") or {}
+    status = observation.get("status") or after.get("status") or "unknown"
+    return build_task_cluster(
+        snapshot.get("latestUserInputSummary"),
+        latest_meaningful_preview(payload),
+        status=status,
+        source_update_ms=observation.get("lastUpdatedMs") or after.get("lastUpdatedMs"),
+    )
+
+
 def assert_turn_boundary(result: dict, include_payload: bool = False) -> dict:
     allowed_keys = set(ALLOWED_TURN_KEYS)
     if include_payload:
@@ -103,6 +118,10 @@ def assert_turn_boundary(result: dict, include_payload: bool = False) -> dict:
     if cadence_keys != ALLOWED_CADENCE_KEYS:
         raise ValueError(f"turn boundary violation: unexpected cadence keys {sorted(cadence_keys - ALLOWED_CADENCE_KEYS)}")
 
+    task_cluster_keys = set(result["taskCluster"])
+    if task_cluster_keys != ALLOWED_TASK_CLUSTER_KEYS:
+        raise ValueError(f"turn boundary violation: unexpected taskCluster keys {sorted(task_cluster_keys - ALLOWED_TASK_CLUSTER_KEYS)}")
+
     return result
 
 
@@ -122,6 +141,7 @@ def build_turn_result(payload, control=None, origin_session=None, origin_target=
         "shouldSend": should_send,
         "delivery": delivery,
         "cadence": cadence,
+        "taskCluster": build_task_cluster_payload(payload),
     }
     if include_payload:
         result["payload"] = payload
