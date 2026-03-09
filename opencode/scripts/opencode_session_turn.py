@@ -16,7 +16,7 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 # - caution: control input may influence the decision pass but should not be echoed back as
 #   part of the agent-consumption happy path;
 # - disallowed: rendered user-facing prose, strategy/narrative plans, or helper-context routing.
-ALLOWED_TURN_KEYS = frozenset({"factSkeleton", "shouldSend", "delivery", "cadence", "taskCluster"})
+ALLOWED_TURN_KEYS = frozenset({"opencodeSessionId", "factSkeleton", "shouldSend", "delivery", "cadence", "taskCluster"})
 DEBUG_ONLY_TURN_KEYS = frozenset({"payload"})
 ALLOWED_FACT_SKELETON_KEYS = frozenset({"status", "phase", "latestMeaningfulPreview", "reason"})
 ALLOWED_DELIVERY_KEYS = frozenset({"originSession", "originTarget"})
@@ -125,7 +125,7 @@ def assert_turn_boundary(result: dict, include_payload: bool = False) -> dict:
     return result
 
 
-def build_turn_result(payload, control=None, origin_session=None, origin_target=None, include_payload=False):
+def build_turn_result(payload, control=None, origin_session=None, origin_target=None, session_id=None, include_payload=False):
     fact_skeleton = build_fact_skeleton(payload)
     cadence = build_cadence(payload)
     delivery = {
@@ -137,6 +137,7 @@ def build_turn_result(payload, control=None, origin_session=None, origin_target=
     # `control` is intentionally consumed during the decision pass but omitted from the
     # happy-path turn envelope so the result stays mechanical and delivery-safe.
     result = {
+        "opencodeSessionId": session_id,
         "factSkeleton": fact_skeleton,
         "shouldSend": should_send,
         "delivery": delivery,
@@ -191,6 +192,7 @@ def main() -> None:
             payload,
             origin_session=args.origin_session,
             origin_target=args.origin_target,
+            session_id=args.session_id,
             include_payload=args.include_payload,
         ),
         ensure_ascii=False,

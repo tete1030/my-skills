@@ -194,7 +194,11 @@ Do not assume shared visibility of `systemEvent` text, JSON, headers, event tags
 Rules:
 
 - `systemEvent` / `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` payloads are transport envelopes, not user-facing text.
-- `status`, `phase`, `latestMeaningfulPreview`, `reason`, and cadence are the important facts.
+- Treat watcher-delivered runtime updates as **lightweight signals**. The signal is a trigger to inspect current state once, not rich content to paraphrase.
+- Prefer `runtimeSignal.signalKind`, `runtimeSignal.recommendedNextAction`, `runtimeSignal.opencodeSessionId`, `taskCluster`, `status`, `phase`, `reason`, and cadence over any old preview text.
+- When `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` against that `opencodeSessionId`, then speak from the current inspected state.
+- Do **not** restate the signal payload itself to the user.
+- After that one inspect, do **not** continue polling unless the user explicitly asks, a blocker/high-priority exception requires follow-up, or you are diagnosing watcher/runtime issues.
 - Translate runtime facts into user language; do **not** echo raw JSON, transport headers, event tags, or mechanical watcher wording.
 - Do **not** reply with “received runtime update” or narrate watcher plumbing unless the user explicitly asks about the plumbing.
 - Do **not** restate progress event-by-event.

@@ -9,6 +9,7 @@ Keep the runtime model small:
 - delivery metadata points back to the original task-initiating session;
 - the current practical consumption path is `openclaw gateway call agent` with `sessionKey=originSession`;
 - the transported payload remains a structured `systemEvent`-shaped handoff, not user-facing prose;
+- watcher-triggered delivery should act as a lightweight signal that prompts one inspect of current state, not a rich progress summary to paraphrase directly;
 
 ## Default model
 

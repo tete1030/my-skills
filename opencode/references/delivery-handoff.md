@@ -98,6 +98,7 @@ So the full output shape remains:
 - `facts`
 - `cadence`
 - `routing`
+- `runtimeSignal`
 - `openclawDelivery`
 
 ### `openclawDelivery`
@@ -146,20 +147,22 @@ It carries:
 
 - the compact main-agent input
 - the explicit delivery policy (`primary=origin_session_system_event`)
-- a compact consumption policy that tells the main-session agent to treat the payload as internal runtime input and, if it replies visibly, continue the conversation naturally instead of talking about handoff mechanics
+- a compact consumption policy that tells the main-session agent to treat the payload as an internal runtime **signal** and, if it replies visibly, inspect current state once and continue the conversation naturally instead of talking about handoff mechanics
 
 This is intentionally **not user-facing prose**.
 The bridge may forward it as the body of an `openclaw gateway call agent` request, but that does not change ownership: the originating main-session agent still decides whether/how to explain it to the user.
 
 ### Main-agent interpretation rule
 
-Treat the injected payload as an **internal runtime/progress input**.
+Treat the injected payload as an **internal runtime signal**.
 Use it to update your understanding of task state, not as text to parrot back.
 
-- do read `status`, `phase`, `latestMeaningfulPreview`, cadence, and routing
+- do read `runtimeSignal.signalKind`, `runtimeSignal.recommendedNextAction`, `runtimeSignal.opencodeSessionId`, `taskCluster`, `status`, `phase`, cadence, and routing
+- when `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do one `inspect` of that OpenCode session and speak from the inspected current state
 - do write any visible reply in natural task-centered language
 - do stay silent when cadence/reason says no visible update is needed
-- do not echo the `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` header, raw JSON, or transport mechanics
+- do not echo the `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` header, raw JSON, transport mechanics, or the signal payload itself
+- after that one inspect, do not continue polling unless the user explicitly asks or a narrow exception applies
 - do not let `ignored=true` plugin noise outweigh the accumulated meaningful summary unless debugging requires it
 
 ### Bridge to OpenClaw CLI

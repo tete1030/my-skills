@@ -25,6 +25,7 @@ class DeliveryHandoffTests(unittest.TestCase):
 
     def ready_turn(self):
         return {
+            "opencodeSessionId": "ses_release_demo",
             "factSkeleton": {
                 "status": "running",
                 "phase": "Collect verification status",
@@ -76,21 +77,32 @@ class DeliveryHandoffTests(unittest.TestCase):
             "primary": "origin_session_system_event",
         })
         self.assertEqual(envelope["consumptionPolicy"], {
-            "treatAs": "internal_runtime_input",
-            "ifVisible": "continue_current_conversation_naturally",
+            "treatAs": "internal_runtime_signal",
+            "ifVisible": "inspect_once_current_state_then_continue_current_conversation_naturally",
             "avoid": [
                 "handoff_mechanics",
                 "routing_details",
                 "transport_details",
                 "prompt_mechanics",
+                "verbatim_signal_payload",
             ],
         })
         self.assertEqual(envelope["agentInput"]["routing"]["originSession"], "origin-session-example")
         self.assertEqual(envelope["agentInput"]["updateType"], "progress")
         self.assertEqual(envelope["agentInput"]["taskCluster"]["key"], "task-cluster-release")
         self.assertEqual(envelope["agentInput"]["replyPolicy"]["replyDefault"], "send_if_not_cluster_superseded")
+        self.assertEqual(
+            envelope["agentInput"]["runtimeSignal"],
+            {
+                "signalKind": "progress",
+                "recommendedNextAction": "inspect_once_current_state",
+                "opencodeSessionId": "ses_release_demo",
+                "taskClusterKey": "task-cluster-release",
+                "reasonCategory": "state_changed",
+            },
+        )
 
-    def test_legacy_agent_input_is_still_accepted(self):
+    def test_legacy_agent_input_is_still_accepted_and_normalized_to_runtime_signal(self):
         agent_input = {
             "shouldSend": True,
             "action": "send_update",
@@ -123,9 +135,13 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["deliveryAction"], "inject")
         self.assertEqual(result["updateType"], "progress")
         self.assertEqual(result["routing"]["originSession"], "origin-session-example")
+        self.assertEqual(result["runtimeSignal"]["signalKind"], "progress")
+        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
+        self.assertIsNone(result["runtimeSignal"]["opencodeSessionId"])
 
     def test_origin_session_missing_holds_even_when_origin_target_exists(self):
         turn_result = {
+            "opencodeSessionId": "ses_completed_demo",
             "factSkeleton": {
                 "status": "completed",
                 "phase": None,
@@ -154,6 +170,7 @@ class DeliveryHandoffTests(unittest.TestCase):
 
     def test_conflicting_origin_routes_hold_without_rewriting(self):
         turn_result = {
+            "opencodeSessionId": "ses_blocked_demo",
             "factSkeleton": {
                 "status": "blocked",
                 "phase": "Waiting for approval",
@@ -183,6 +200,7 @@ class DeliveryHandoffTests(unittest.TestCase):
 
     def test_silent_turn_stays_skip_and_never_builds_templates(self):
         turn_result = {
+            "opencodeSessionId": "ses_silent_demo",
             "factSkeleton": {
                 "status": "running",
                 "phase": "Collect verification status",
@@ -209,6 +227,7 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["reason"], "should_not_send")
         self.assertFalse(result["openclawDelivery"]["requiresNarrative"])
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
+        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "stay_silent")
 
     def test_delivery_handoff_schema_stays_mechanical(self):
         result = build_delivery_handoff(self.ready_turn())

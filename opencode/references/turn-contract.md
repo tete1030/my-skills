@@ -32,6 +32,7 @@ The happy-path `turn` envelope should stay small and auditable.
 
 Allowed top-level fields:
 
+- `opencodeSessionId`
 - `factSkeleton`
 - `shouldSend`
 - `delivery`
@@ -100,6 +101,7 @@ Allowed output shape:
 - `facts`
 - `cadence`
 - `routing`
+- `runtimeSignal`
 
 This layer may:
 
@@ -169,10 +171,13 @@ This layer must not:
 Consumption rules:
 
 - The injected payload is **internal runtime context**. The user does **not** see it.
-- Translate the facts into normal user language; do not restate headers, event tags, JSON, or watcher/debug phrasing.
+- Treat the injected payload as a lightweight signal, not as reply text to paraphrase.
+- Read `runtimeSignal` first. If `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do one `inspect` of that `runtimeSignal.opencodeSessionId` and speak from the inspected current state.
+- Translate the facts into normal user language; do not restate headers, event tags, JSON, watcher/debug phrasing, or the signal payload itself.
 - Do not mirror every runtime event with a visible chat reply.
 - For the same task cluster, prefer one useful progress update and one final completion/status update.
 - Repeated `completed`, same-state, or no-new-user-value updates should usually stay silent.
+- After the one inspect, do not continue polling unless the user explicitly asks or a narrow exception applies.
 - If you do reply, structure it as: (1) what was just done, (2) what evidence was seen, (3) what that means for the user/task.
 
 Default mapping:

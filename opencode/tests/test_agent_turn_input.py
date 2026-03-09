@@ -9,6 +9,7 @@ from opencode_agent_turn_input import (  # noqa: E402
     ALLOWED_CADENCE_KEYS,
     ALLOWED_FACT_KEYS,
     ALLOWED_ROUTING_KEYS,
+    ALLOWED_RUNTIME_SIGNAL_KEYS,
     ALLOWED_TOP_LEVEL_KEYS,
     build_agent_turn_input,
 )
@@ -16,8 +17,9 @@ from opencode_task_cluster import ALLOWED_REPLY_POLICY_KEYS, ALLOWED_TASK_CLUSTE
 
 
 class AgentTurnInputTests(unittest.TestCase):
-    def test_running_state_change_maps_to_progress_update(self):
+    def test_running_state_change_maps_to_progress_signal(self):
         turn_result = {
+            "opencodeSessionId": "ses_demo_progress",
             "factSkeleton": {
                 "status": "running",
                 "phase": "Collect verification status",
@@ -53,21 +55,34 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["style"], "brief_progress")
         self.assertEqual(result["reason"], "state_changed")
         self.assertEqual(result["narrativeOwner"], "main_session_agent")
+        self.assertEqual(result["mentionFields"], ["status", "phase"])
         self.assertEqual(
-            result["mentionFields"],
-            ["status", "phase", "latestMeaningfulPreview"],
+            result["facts"],
+            {
+                "status": "running",
+                "phase": "Collect verification status",
+            },
         )
-        self.assertEqual(result["facts"]["status"], "running")
-        self.assertEqual(result["facts"]["phase"], "Collect verification status")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
         self.assertEqual(result["routing"]["originSession"], "origin-session-example")
         self.assertEqual(result["taskCluster"]["key"], "task-cluster-demo")
         self.assertEqual(result["taskCluster"]["clusterStateRank"], 20)
         self.assertEqual(result["replyPolicy"]["replyDefault"], "send_if_not_cluster_superseded")
+        self.assertEqual(
+            result["runtimeSignal"],
+            {
+                "signalKind": "progress",
+                "recommendedNextAction": "inspect_once_current_state",
+                "opencodeSessionId": "ses_demo_progress",
+                "taskClusterKey": "task-cluster-demo",
+                "reasonCategory": "state_changed",
+            },
+        )
         self.assertNotIn("message", result)
 
-    def test_visible_no_change_maps_to_heartbeat_without_preview_requirement(self):
+    def test_visible_no_change_maps_to_progress_signal_without_preview(self):
         turn_result = {
+            "opencodeSessionId": "ses_demo_heartbeat",
             "factSkeleton": {
                 "status": "running",
                 "phase": "Waiting for verification",
@@ -91,6 +106,9 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["style"], "brief_heartbeat")
         self.assertEqual(result["mentionFields"], ["status", "phase"])
         self.assertEqual(result["facts"], {"status": "running", "phase": "Waiting for verification"})
+        self.assertEqual(result["runtimeSignal"]["signalKind"], "progress")
+        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
+        self.assertEqual(result["runtimeSignal"]["reasonCategory"], "no_change")
         self.assertFalse(result["routing"]["mustPreserveOrigin"])
 
     def test_silent_turn_stays_silent_but_preserves_routing(self):
@@ -122,10 +140,12 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["priority"], "low")
         self.assertEqual(result["style"], "silent")
         self.assertEqual(result["facts"], {})
+        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "stay_silent")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
 
-    def test_blocked_turn_maps_to_high_priority_blocker_update(self):
+    def test_blocked_turn_maps_to_high_priority_blocker_signal(self):
         turn_result = {
+            "opencodeSessionId": "ses_demo_blocked",
             "factSkeleton": {
                 "status": "blocked",
                 "phase": "Waiting for approval",
@@ -150,10 +170,13 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["updateType"], "blocked")
         self.assertEqual(result["priority"], "high")
         self.assertEqual(result["style"], "brief_blocker")
-        self.assertEqual(result["facts"]["latestMeaningfulPreview"], "Need user confirmation before deploy.")
+        self.assertEqual(result["facts"], {"status": "blocked", "phase": "Waiting for approval"})
+        self.assertEqual(result["runtimeSignal"]["signalKind"], "blocked")
+        self.assertEqual(result["runtimeSignal"]["opencodeSessionId"], "ses_demo_blocked")
 
-    def test_completed_no_change_stays_completion_not_heartbeat(self):
+    def test_completed_no_change_stays_completion_signal_not_heartbeat(self):
         turn_result = {
+            "opencodeSessionId": "ses_demo_completed",
             "factSkeleton": {
                 "status": "completed",
                 "phase": None,
@@ -177,17 +200,14 @@ class AgentTurnInputTests(unittest.TestCase):
 
         self.assertEqual(result["updateType"], "completed")
         self.assertEqual(result["style"], "brief_completion")
-        self.assertEqual(
-            result["facts"],
-            {
-                "status": "completed",
-                "latestMeaningfulPreview": "Validated final output and wrapped up the task.",
-            },
-        )
+        self.assertEqual(result["facts"], {"status": "completed"})
+        self.assertEqual(result["runtimeSignal"]["signalKind"], "completed")
+        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
 
     def test_agent_turn_input_schema_stays_inside_boundary(self):
         turn_result = {
+            "opencodeSessionId": "ses_demo_schema",
             "factSkeleton": {
                 "status": "completed",
                 "phase": "Final verification",
@@ -216,6 +236,7 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(set(result["routing"]), ALLOWED_ROUTING_KEYS)
         self.assertEqual(set(result["taskCluster"]), ALLOWED_TASK_CLUSTER_KEYS)
         self.assertEqual(set(result["replyPolicy"]), ALLOWED_REPLY_POLICY_KEYS)
+        self.assertEqual(set(result["runtimeSignal"]), ALLOWED_RUNTIME_SIGNAL_KEYS)
         for forbidden_key in [
             "message",
             "summary",

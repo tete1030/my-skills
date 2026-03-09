@@ -8,6 +8,7 @@ from opencode_agent_turn_input import (
     ALLOWED_CADENCE_KEYS,
     ALLOWED_FACT_KEYS,
     ALLOWED_ROUTING_KEYS,
+    ALLOWED_RUNTIME_SIGNAL_KEYS,
     ALLOWED_TOP_LEVEL_KEYS as ALLOWED_AGENT_INPUT_KEYS,
     assert_agent_input_boundary,
     build_agent_turn_input,
@@ -135,13 +136,14 @@ def build_system_event_envelope(agent_input: dict):
             "primary": "origin_session_system_event",
         },
         "consumptionPolicy": {
-            "treatAs": "internal_runtime_input",
-            "ifVisible": "continue_current_conversation_naturally",
+            "treatAs": "internal_runtime_signal",
+            "ifVisible": "inspect_once_current_state_then_continue_current_conversation_naturally",
             "avoid": [
                 "handoff_mechanics",
                 "routing_details",
                 "transport_details",
                 "prompt_mechanics",
+                "verbatim_signal_payload",
             ],
         },
     }
@@ -274,6 +276,13 @@ def assert_handoff_boundary(result: dict) -> dict:
     reply_policy_keys = set(result["replyPolicy"])
     if reply_policy_keys != ALLOWED_REPLY_POLICY_KEYS:
         raise ValueError(f"delivery-handoff boundary violation: unexpected replyPolicy keys {sorted(reply_policy_keys - ALLOWED_REPLY_POLICY_KEYS)}")
+
+    runtime_signal_keys = set(result["runtimeSignal"])
+    if runtime_signal_keys != ALLOWED_RUNTIME_SIGNAL_KEYS:
+        raise ValueError(
+            "delivery-handoff boundary violation: unexpected runtimeSignal keys "
+            f"{sorted(runtime_signal_keys - ALLOWED_RUNTIME_SIGNAL_KEYS)}"
+        )
 
     delivery_keys = set(result["openclawDelivery"])
     if delivery_keys != ALLOWED_OPENCLAW_DELIVERY_KEYS:

@@ -27,8 +27,16 @@ ALLOWED_AGENT_CALL_KEYS = frozenset({
 })
 ALLOWED_EXECUTION_KEYS = frozenset({"returncode", "stdout", "stderr"})
 AGENT_CALL_KIND = "openclaw_gateway_agent_call_v1"
-STABLE_IDEMPOTENCY_FACT_KEYS = ("status", "phase", "latestMeaningfulPreview")
+STABLE_IDEMPOTENCY_FACT_KEYS = ("status", "phase")
 STABLE_IDEMPOTENCY_ROUTING_KEYS = ("originSession", "originTarget")
+STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS = (
+    "signalKind",
+    "recommendedNextAction",
+    "opencodeSessionId",
+    "taskClusterKey",
+    "reasonCategory",
+)
+STABLE_IDEMPOTENCY_TASK_CLUSTER_KEYS = ("key", "clusterStateRank", "detailRank")
 
 
 def load_json_input(value: str):
@@ -43,6 +51,7 @@ def build_agent_message(system_event_text: str) -> str:
     agent_input = envelope["agentInput"]
     task_cluster = agent_input.get("taskCluster") or {}
     reply_policy = agent_input.get("replyPolicy") or {}
+    runtime_signal = agent_input.get("runtimeSignal") or {}
     avoid = ", ".join(item.replace("_", " ") for item in consumption["avoid"])
     cluster_guidance = ""
     if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
@@ -50,10 +59,20 @@ def build_agent_message(system_event_text: str) -> str:
             "For the same task cluster, if you already handled a later or higher-rank conclusion, "
             "keep weaker or older superseded updates internal and do not send another visible reply.\n"
         )
+    inspect_guidance = ""
+    if runtime_signal.get("recommendedNextAction") == "inspect_once_current_state":
+        session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
+        inspect_guidance = (
+            "Treat the payload below as a lightweight runtime signal, not as reply content to paraphrase.\n"
+            f"Before any visible reply, do one one-off inspect of {session_hint} and speak from that current state.\n"
+            "Do not restate the signal payload itself to the user.\n"
+            "After that single inspect, do not continue polling unless the user explicitly asks or an allowed exception clearly applies.\n"
+        )
     return (
         "Runtime task update for the current conversation.\n"
         f"Treat the payload below as {consumption['treatAs'].replace('_', ' ')}.\n"
-        "If you reply visibly, continue the task conversation naturally for the user.\n"
+        + inspect_guidance
+        + "If you reply visibly, continue the task conversation naturally for the user.\n"
         + cluster_guidance
         + f"Avoid mentioning {avoid} unless the user explicitly asks.\n\n"
         + system_event_text
@@ -103,6 +122,8 @@ def build_idempotency_basis(
         "action": agent_input.get("action"),
         "updateType": agent_input.get("updateType"),
         "facts": _stable_subset(agent_input.get("facts") or {}, STABLE_IDEMPOTENCY_FACT_KEYS),
+        "runtimeSignal": _stable_subset(agent_input.get("runtimeSignal") or {}, STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS),
+        "taskCluster": _stable_subset(agent_input.get("taskCluster") or {}, STABLE_IDEMPOTENCY_TASK_CLUSTER_KEYS),
     }
 
 

@@ -40,8 +40,10 @@ class TurnOutputTests(unittest.TestCase):
             control={"executionMode": "main_session_centered"},
             origin_session="origin-session-example",
             origin_target="origin-target-example",
+            session_id="ses_turn_demo",
         )
 
+        self.assertEqual(result["opencodeSessionId"], "ses_turn_demo")
         self.assertEqual(result["factSkeleton"]["status"], "running")
         self.assertEqual(result["factSkeleton"]["phase"], "Collect verification status")
         self.assertIn("user: Please continue", result["factSkeleton"]["latestMeaningfulPreview"])

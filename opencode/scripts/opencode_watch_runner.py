@@ -102,13 +102,13 @@ def watch_activity_signature(turn: dict[str, Any], agent_call: dict[str, Any]) -
     signature_payload = {
         "status": fact.get("status"),
         "phase": fact.get("phase"),
-        "preview": fact.get("latestMeaningfulPreview"),
         "decision": cadence.get("decision"),
         "actionKey": action_key_from_agent_call(agent_call),
         "routeStatus": agent_call.get("routeStatus"),
         "deliveryAction": agent_call.get("deliveryAction"),
         "taskClusterKey": task_cluster.get("key"),
         "clusterStateRank": task_cluster.get("clusterStateRank"),
+        "detailRank": task_cluster.get("detailRank"),
         "sourceUpdateMs": task_cluster.get("sourceUpdateMs"),
     }
     return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True)
@@ -290,12 +290,15 @@ def build_turn_command(args: argparse.Namespace) -> list[str]:
     return command
 
 
-def turn_for_handoff(turn: dict[str, Any]) -> dict[str, Any]:
-    return {
+def turn_for_handoff(turn: dict[str, Any], *, opencode_session_id: str | None = None) -> dict[str, Any]:
+    handoff = {
         key: value
         for key, value in turn.items()
         if key in {"factSkeleton", "shouldSend", "delivery", "cadence", "taskCluster"}
     }
+    if opencode_session_id:
+        handoff["opencodeSessionId"] = opencode_session_id
+    return handoff
 
 
 def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
@@ -307,7 +310,10 @@ def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
     handoff_args = ["delivery-handoff", "--input", "-"]
     if args.live:
         handoff_args.append("--live-ready")
-    handoff = run_opencodectl(handoff_args, stdin_text=json.dumps(turn_for_handoff(turn), ensure_ascii=False))
+    handoff = run_opencodectl(
+        handoff_args,
+        stdin_text=json.dumps(turn_for_handoff(turn, opencode_session_id=args.session_id), ensure_ascii=False),
+    )
 
     agent_call = run_opencodectl(
         ["openclaw-agent-call", "--input", "-"],
@@ -346,7 +352,7 @@ def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
         "state": args.state,
         "mode": watch_action["mode"],
         "watchAction": watch_action,
-        "turn": turn_for_handoff(turn),
+        "turn": turn_for_handoff(turn, opencode_session_id=args.session_id),
         "handoff": handoff,
         "agentCall": final_agent_call,
         "watchState": updated_watch_state,

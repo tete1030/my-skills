@@ -15,6 +15,7 @@ from opencode_watch_runner import (  # noqa: E402
     action_key_from_agent_call,
     decide_watch_action,
     should_stop_for_idle_timeout,
+    turn_for_handoff,
     update_watch_state,
 )
 
@@ -50,6 +51,21 @@ class WatchRunnerTests(unittest.TestCase):
             action_key_from_agent_call(self.ready_agent_call()),
             "opencode-origin-handoff-abc123",
         )
+
+    def test_turn_for_handoff_includes_opencode_session_id_signal_context(self):
+        handoff_turn = turn_for_handoff(
+            {
+                "factSkeleton": {"status": "running", "phase": "Collect verification status", "latestMeaningfulPreview": "Created files.", "reason": "state_changed"},
+                "shouldSend": True,
+                "delivery": {"originSession": "origin-session", "originTarget": "origin-target"},
+                "cadence": {"decision": "visible_update", "noChange": False, "consecutiveNoChangeCount": 0, "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00"},
+                "taskCluster": self.task_cluster(),
+            },
+            opencode_session_id="ses_watch_demo",
+        )
+
+        self.assertEqual(handoff_turn["opencodeSessionId"], "ses_watch_demo")
+        self.assertEqual(handoff_turn["factSkeleton"]["status"], "running")
 
     def test_dry_run_plans_ready_inject_without_execution(self):
         action = decide_watch_action(self.ready_agent_call(), {}, live=False)
