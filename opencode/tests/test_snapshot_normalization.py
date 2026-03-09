@@ -68,6 +68,87 @@ USER_TEXT_MESSAGE = {
     ],
 }
 
+IGNORED_PLUGIN_MESSAGE = {
+    "info": {
+        "role": "user",
+        "time": {"created": 1772903315500},
+        "id": "msg_plugin_noise",
+        "sessionID": "ses_x",
+        "ignored": True,
+    },
+    "parts": [
+        {
+            "type": "text",
+            "text": "DCP plugin sync marker",
+            "ignored": True,
+        }
+    ],
+}
+
+READ_MESSAGE = {
+    "info": {
+        "role": "assistant",
+        "time": {
+            "created": 1772903315600,
+            "completed": 1772903315610,
+        },
+        "id": "msg_read_latest",
+        "sessionID": "ses_x",
+    },
+    "parts": [
+        {
+            "type": "tool",
+            "tool": "read",
+            "input": {"filePath": "/mnt/vault/test-opencode-skill/opencode/scripts/opencode_snapshot.py"},
+            "state": {
+                "status": "completed",
+                "output": "#!/usr/bin/env python3\n" + ("x" * 320),
+            },
+        }
+    ],
+}
+
+BASH_PROGRESS_MESSAGE = {
+    "info": {
+        "role": "assistant",
+        "time": {
+            "created": 1772903315700,
+            "completed": 1772903315710,
+        },
+        "id": "msg_bash_progress",
+        "sessionID": "ses_x",
+    },
+    "parts": [
+        {
+            "type": "tool",
+            "tool": "bash",
+            "state": {
+                "status": "completed",
+                "output": "PWD=/mnt/vault/test-opencode-skill\n" + ("y" * 280) + "\npatched summarizer and added coverage",
+            },
+        }
+    ],
+}
+
+ASSISTANT_MULTILINGUAL_TEXT_MESSAGE = {
+    "info": {
+        "role": "assistant",
+        "time": {
+            "created": 1772903315800,
+            "completed": 1772903315810,
+        },
+        "finish": "stop",
+        "id": "msg_multilingual_text",
+        "sessionID": "ses_x",
+    },
+    "parts": [
+        {
+            "type": "text",
+            "text": "已改成结构化事件汇总，并补上回归测试。",
+        }
+    ],
+}
+
 
 class SnapshotNormalizationTests(unittest.TestCase):
     def test_compact_latest_message_extracts_real_message_shape(self):
@@ -118,6 +199,52 @@ class SnapshotNormalizationTests(unittest.TestCase):
         self.assertEqual(summary["latestMessage"]["id"], "msg_cc945b9ef00294qavn782M9jhG")
         self.assertEqual(summary["latestAssistantTextPreviewMessageId"], "msg_cbe3a7527001cZT0WrLUPWnamr")
         self.assertIn("Released v0.3.4 successfully", summary["latestAssistantTextPreview"])
+
+    def test_user_input_is_included_in_accumulated_event_summary(self):
+        summary = summarize_recent_messages([
+            USER_TEXT_MESSAGE,
+            READ_MESSAGE,
+            BASH_PROGRESS_MESSAGE,
+            ASSISTANT_MULTILINGUAL_TEXT_MESSAGE,
+        ])
+
+        self.assertEqual(summary["latestUserInputMessageId"], "msg_user_latest")
+        self.assertIn("Please continue", summary["latestUserInputSummary"])
+        self.assertIn("user:", summary["accumulatedEventSummary"])
+        self.assertIn("read:", summary["accumulatedEventSummary"])
+        self.assertIn("tool[bash]:", summary["accumulatedEventSummary"])
+        self.assertIn("text:", summary["accumulatedEventSummary"])
+
+    def test_ignored_plugin_input_is_filtered_from_summary_and_latest_message(self):
+        summary = summarize_recent_messages([ASSISTANT_STOP_TEXT_MESSAGE, IGNORED_PLUGIN_MESSAGE])
+
+        self.assertEqual(summary["latestMessage"]["id"], "msg_cbe3a7527001cZT0WrLUPWnamr")
+        self.assertIsNone(summary["latestUserInputSummary"])
+        self.assertNotIn("plugin", summary["accumulatedEventSummary"].lower())
+
+    def test_accumulated_summary_stays_compact_without_raw_stdout_dump(self):
+        summary = summarize_recent_messages([
+            USER_TEXT_MESSAGE,
+            READ_MESSAGE,
+            BASH_PROGRESS_MESSAGE,
+            ASSISTANT_MULTILINGUAL_TEXT_MESSAGE,
+        ])
+
+        accumulated = summary["accumulatedEventSummary"]
+        self.assertIn("opencode_snapshot.py", accumulated)
+        self.assertIn("patched summarizer and added coverage", accumulated)
+        self.assertNotIn("PWD=", accumulated)
+        self.assertNotIn("x" * 40, accumulated)
+        self.assertNotIn("y" * 40, accumulated)
+
+    def test_event_based_summary_keeps_multilingual_progress_without_keywords(self):
+        summary = summarize_recent_messages([
+            USER_TEXT_MESSAGE,
+            ASSISTANT_MULTILINGUAL_TEXT_MESSAGE,
+        ])
+
+        self.assertIn("已改成结构化事件汇总", summary["accumulatedEventSummary"])
+        self.assertIn("text:", summary["accumulatedEventSummary"])
 
     def test_derive_status_and_observation_use_normalized_fields(self):
         completed_snapshot = {

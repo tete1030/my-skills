@@ -27,6 +27,7 @@ class TurnOutputTests(unittest.TestCase):
                 "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
             },
             "snapshot": {
+                "accumulatedEventSummary": "user: Please continue and give me a short summary when done. | text: 已改成结构化事件汇总，并补上回归测试。",
                 "latestAssistantTextPreview": "Released v0.3.4 successfully. Included the usage-label cleanup change.",
                 "latestMessage": {"id": "msg_latest"},
             },
@@ -41,7 +42,8 @@ class TurnOutputTests(unittest.TestCase):
 
         self.assertEqual(result["factSkeleton"]["status"], "running")
         self.assertEqual(result["factSkeleton"]["phase"], "Collect verification status")
-        self.assertIn("Released v0.3.4 successfully", result["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertIn("user: Please continue", result["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertIn("text: 已改成结构化事件汇总", result["factSkeleton"]["latestMeaningfulPreview"])
         self.assertEqual(result["factSkeleton"]["reason"], "state_changed")
         self.assertTrue(result["shouldSend"])
         self.assertEqual(result["delivery"]["originSession"], "origin-session-example")

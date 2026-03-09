@@ -13,7 +13,10 @@ FAILED_MESSAGE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"
 RUNNING_TOOL_STATUSES = {"queued", "pending", "running", "active", "started", "in_progress"}
 COMPLETED_TOOL_STATUSES = {"completed", "done", "finished", "succeeded", "success", "ok"}
 
-
+EVENT_LEDGER_MAX = 12
+EVENT_SELECTION_MAX = 4
+EVENT_SUMMARY_LIMIT = 260
+EVENT_ITEM_LIMIT = 90
 
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEXISH_RE = re.compile(r"^[0-9a-f]{7,}$", re.IGNORECASE)
@@ -21,6 +24,17 @@ HEXISH_RE = re.compile(r"^[0-9a-f]{7,}$", re.IGNORECASE)
 
 def strip_ansi(value: str) -> str:
     return ANSI_RE.sub("", value)
+
+
+
+def truncate_text(value: Any, limit: int = 200) -> Optional[str]:
+    if value is None:
+        return None
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
 
 
 def preview_segments(value: Any) -> List[str]:
@@ -36,6 +50,7 @@ def preview_segments(value: Any) -> List[str]:
         if cleaned:
             parts.append(cleaned)
     return parts
+
 
 
 def is_noise_segment(segment: str) -> bool:
@@ -56,40 +71,46 @@ def is_noise_segment(segment: str) -> bool:
     return False
 
 
-def score_segment(segment: str) -> tuple[int, int]:
+
+def score_segment(segment: str, index: int) -> tuple[int, int]:
     s = segment.strip()
     low = s.lower()
     score = 0
-    keywords = ["done", "completed", "released", "success", "succeeded", "passed", "fixed", "failed", "blocked", "summary", "result"]
-    if any(k in low for k in keywords):
-        score += 5
+
     if any(ch.isalpha() for ch in s):
         score += 2
     if " " in s:
         score += 1
-    if len(s) > 100:
-        score -= 1
-    if low.startswith("cloning into") or low.startswith("return exactly") or low.startswith("assistant to="):
+    if any(ch in s for ch in ".,:;!?，。:：()[]{}"):
+        score += 1
+    if 6 <= len(s) <= 140:
+        score += 1
+    if len(s) > 180:
         score -= 2
-    return (score, -len(s))
+    if len(s) > 120 and " " not in s:
+        score -= 2
+    if low.startswith("return exactly") or low.startswith("assistant to=") or low.startswith("tool to="):
+        score -= 2
+
+    return (score, index)
+
 
 
 def clean_preview(value: Any, limit: int = 200) -> Optional[str]:
     segments = [seg for seg in preview_segments(value) if not is_noise_segment(seg)]
     if not segments:
         return truncate_text(value, limit=limit)
-    best = sorted(segments, key=score_segment, reverse=True)[:2]
-    text = " | ".join(best)
+
+    scored = [(score_segment(segment, index), segment) for index, segment in enumerate(segments)]
+    winners = [item for item in scored if item[0][0] >= 2]
+    if not winners:
+        winners = [max(scored, key=lambda item: item[0])]
+    else:
+        winners = sorted(winners, key=lambda item: item[0], reverse=True)[:2]
+
+    winners = sorted(winners, key=lambda item: item[0][1])
+    text = " | ".join(segment for _score, segment in winners)
     return truncate_text(text, limit=limit)
-
-
-def truncate_text(value: Any, limit: int = 200) -> Optional[str]:
-    if value is None:
-        return None
-    text = " ".join(str(value).split())
-    if not text:
-        return None
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 
@@ -100,6 +121,35 @@ def get_nested(obj: Any, *keys: str) -> Any:
             return None
         cur = cur[key]
     return cur
+
+
+
+def truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+
+def extract_ignored_flag(obj: Any) -> bool:
+    if not isinstance(obj, dict):
+        return False
+    if truthy(obj.get("ignored")):
+        return True
+    for path in [
+        ("info", "ignored"),
+        ("metadata", "ignored"),
+        ("meta", "ignored"),
+        ("state", "ignored"),
+        ("state", "metadata", "ignored"),
+    ]:
+        if truthy(get_nested(obj, *path)):
+            return True
+    return False
 
 
 
@@ -135,6 +185,7 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
     completed_at = get_nested(info, "time", "completed") or msg.get("completed")
     finish = info.get("finish") or msg.get("finish")
     message_id = info.get("id") or msg.get("id")
+    ignored = extract_ignored_flag(msg) or extract_ignored_flag(info)
 
     part_types: List[str] = []
     tool_names: List[str] = []
@@ -183,6 +234,7 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
         "type": part_types[-1] if part_types else None,
         "finish": finish,
         "completed": bool(completed_at),
+        "ignored": ignored,
         "partTypes": part_types or None,
         "hasText": bool(last_text_preview),
         "hasToolCalls": "tool" in part_types if part_types else False,
@@ -273,23 +325,245 @@ def normalize_todo(todo: Any) -> Any:
 
 
 
-def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
-    if not isinstance(messages, list):
-        latest = compact_latest_message(messages)
-        preview = latest.get("message.lastTextPreview") or latest.get("toolOutputPreview")
-        return {
-            "latestMessage": latest,
-            "latestTextPreview": preview,
-            "latestTextPreviewMessageId": latest.get("id"),
-            "latestTextPreviewRole": latest.get("role"),
-            "latestAssistantTextPreview": preview if latest.get("role") == "assistant" and latest.get("message.lastTextPreview") else None,
-            "latestAssistantTextPreviewMessageId": latest.get("id") if latest.get("role") == "assistant" and latest.get("message.lastTextPreview") else None,
-            "latestToolOutputPreview": latest.get("toolOutputPreview"),
-            "messageWindowSize": 1 if latest else 0,
-        }
+def shorten_path(value: Any, limit: int = EVENT_ITEM_LIMIT) -> Optional[str]:
+    text = " ".join(str(value).split())
+    if not text:
+        return None
+    if len(text) <= limit:
+        return text
+    parts = [part for part in re.split(r"[\\/]", text) if part]
+    if len(parts) >= 2:
+        return truncate_text(f"…/{'/'.join(parts[-2:])}", limit=limit)
+    return truncate_text(text, limit=limit)
 
-    normalized_messages = [compact_latest_message(message) for message in messages]
-    latest = normalized_messages[-1] if normalized_messages else {}
+
+
+def compact_path_value(value: Any, limit: int = EVENT_ITEM_LIMIT) -> Optional[str]:
+    if isinstance(value, (list, tuple)):
+        items = [shorten_path(item, limit=max(24, limit // 2)) for item in value]
+        items = [item for item in items if item]
+        if not items:
+            return None
+        joined = ", ".join(items[:2])
+        if len(items) > 2:
+            joined += ", …"
+        return truncate_text(joined, limit=limit)
+    return shorten_path(value, limit=limit)
+
+
+
+def extract_read_target(part: Any, tool_state: Any) -> Optional[str]:
+    candidates = [
+        part,
+        part.get("input") if isinstance(part, dict) else None,
+        part.get("arguments") if isinstance(part, dict) else None,
+        part.get("args") if isinstance(part, dict) else None,
+        tool_state,
+        tool_state.get("input") if isinstance(tool_state, dict) else None,
+        tool_state.get("metadata") if isinstance(tool_state, dict) else None,
+        get_nested(tool_state, "metadata", "input") if isinstance(tool_state, dict) else None,
+    ]
+    for candidate in candidates:
+        if not isinstance(candidate, dict):
+            continue
+        for key in ("path", "file_path", "filePath", "paths", "file", "files", "target"):
+            if candidate.get(key):
+                return compact_path_value(candidate.get(key))
+    return None
+
+
+
+def infer_event_kind(role: str, part: Any) -> Optional[str]:
+    part_type = str(part.get("type") or "").strip().lower()
+    tool_name = str(part.get("tool") or "").strip().lower()
+
+    if part_type == "text":
+        return "user_input" if role == "user" else "text"
+    if part_type == "tool":
+        if tool_name in {"read", "view", "cat"}:
+            return "read"
+        if tool_name.startswith("prune") or tool_name in {"compact", "summarize", "summary"}:
+            return "prune"
+        return "tool"
+    if "prune" in part_type:
+        return "prune"
+    return None
+
+
+
+def build_event_record(message: Any, part: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(message, dict) or not isinstance(part, dict):
+        return None
+
+    info = message.get("info") if isinstance(message.get("info"), dict) else {}
+    role = str(info.get("role") or message.get("role") or "")
+    message_id = info.get("id") or message.get("id")
+    created = get_nested(info, "time", "created") or message.get("created")
+    tool_state = part.get("state") if isinstance(part.get("state"), dict) else {}
+    tool_name = str(part.get("tool") or "").strip() or None
+    tool_status = str(tool_state.get("status") or "").strip().lower() or None
+    kind = infer_event_kind(role.lower(), part)
+    if not kind:
+        return None
+
+    ignored = any([
+        extract_ignored_flag(message),
+        extract_ignored_flag(info),
+        extract_ignored_flag(part),
+        extract_ignored_flag(tool_state),
+    ])
+
+    summary = None
+    if kind in {"user_input", "text"}:
+        summary = clean_preview(part.get("text"), limit=EVENT_ITEM_LIMIT)
+    elif kind == "read":
+        summary = extract_read_target(part, tool_state) or clean_preview(
+            tool_state.get("output") or get_nested(tool_state, "metadata", "output"),
+            limit=EVENT_ITEM_LIMIT,
+        )
+    elif kind == "prune":
+        summary = clean_preview(
+            tool_state.get("output") or get_nested(tool_state, "metadata", "output") or part.get("text") or part.get("reason"),
+            limit=EVENT_ITEM_LIMIT,
+        ) or "context trimmed"
+    elif kind == "tool":
+        summary = clean_preview(
+            tool_state.get("output") or get_nested(tool_state, "metadata", "output"),
+            limit=EVENT_ITEM_LIMIT,
+        )
+        if not summary and tool_status:
+            summary = tool_status
+        if not summary and tool_name:
+            summary = tool_name
+
+    if not summary:
+        return None
+
+    out: Dict[str, Any] = {
+        "kind": kind,
+        "messageId": message_id,
+        "role": role,
+        "summary": summary,
+        "ignored": ignored,
+    }
+    if created is not None:
+        out["created"] = created
+    if tool_name:
+        out["toolName"] = tool_name
+    if tool_status:
+        out["toolStatus"] = tool_status
+    return out
+
+
+
+def extract_message_events(message: Any) -> List[Dict[str, Any]]:
+    if not isinstance(message, dict):
+        return []
+    parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+    events: List[Dict[str, Any]] = []
+    for part in parts:
+        event = build_event_record(message, part)
+        if event:
+            events.append(event)
+    return events
+
+
+
+def collapse_events(events: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    collapsed: List[Dict[str, Any]] = []
+    for event in events:
+        signature = (
+            event.get("kind"),
+            event.get("messageId"),
+            event.get("toolName"),
+            event.get("summary"),
+            event.get("ignored"),
+        )
+        if collapsed:
+            previous = collapsed[-1]
+            previous_signature = (
+                previous.get("kind"),
+                previous.get("messageId"),
+                previous.get("toolName"),
+                previous.get("summary"),
+                previous.get("ignored"),
+            )
+            if signature == previous_signature:
+                continue
+        collapsed.append(event)
+    return collapsed
+
+
+
+def format_event_fragment(event: Dict[str, Any]) -> Optional[str]:
+    summary = truncate_text(event.get("summary"), limit=EVENT_ITEM_LIMIT)
+    if not summary:
+        return None
+
+    kind = event.get("kind")
+    if kind == "tool" and event.get("toolName"):
+        label = f"tool[{event['toolName']}]"
+    else:
+        label = {
+            "user_input": "user",
+            "text": "text",
+            "read": "read",
+            "prune": "prune",
+            "tool": "tool",
+        }.get(kind, kind or "event")
+    return f"{label}: {summary}"
+
+
+
+def summarize_event_ledger(events: List[Dict[str, Any]], limit: int = EVENT_SUMMARY_LIMIT) -> Optional[str]:
+    visible = collapse_events([event for event in events if not event.get("ignored")])
+    if not visible:
+        return None
+
+    selected = visible[-EVENT_SELECTION_MAX:]
+    latest_user = next((event for event in reversed(visible) if event.get("kind") == "user_input"), None)
+    if latest_user and latest_user not in selected:
+        selected = [latest_user, *selected[-(EVENT_SELECTION_MAX - 1):]]
+
+    deduped: List[Dict[str, Any]] = []
+    seen = set()
+    for event in selected:
+        signature = (event.get("messageId"), event.get("kind"), event.get("toolName"), event.get("summary"))
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(event)
+
+    selected_events = list(deduped)
+    fragments = [fragment for fragment in (format_event_fragment(event) for event in selected_events) if fragment]
+    if not fragments:
+        return None
+
+    while len(" | ".join(fragments)) > limit and len(selected_events) > 1:
+        drop_index = 0
+        if selected_events[0].get("kind") == "user_input" and len(selected_events) > 2:
+            drop_index = 1
+        del selected_events[drop_index]
+        fragments = [fragment for fragment in (format_event_fragment(event) for event in selected_events) if fragment]
+    return truncate_text(" | ".join(fragments), limit=limit)
+
+
+
+def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
+    message_list = messages if isinstance(messages, list) else ([messages] if messages is not None else [])
+    normalized_messages = [compact_latest_message(message) for message in message_list]
+    per_message_events = [extract_message_events(message) for message in message_list]
+
+    relevant_indexes = [
+        index
+        for index, events in enumerate(per_message_events)
+        if any(not event.get("ignored") for event in events)
+    ]
+    latest_index = len(normalized_messages) - 1 if normalized_messages else None
+    latest_relevant_index = relevant_indexes[-1] if relevant_indexes else latest_index
+    latest = normalized_messages[latest_relevant_index] if latest_relevant_index is not None else {}
+
+    searchable_indexes = relevant_indexes or list(range(len(normalized_messages)))
 
     latest_text_preview_any = None
     latest_text_preview_any_message_id = None
@@ -297,7 +571,8 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
     latest_assistant_text_preview = None
     latest_assistant_text_preview_message_id = None
 
-    for message in reversed(normalized_messages):
+    for index in reversed(searchable_indexes):
+        message = normalized_messages[index]
         preview = message.get("message.lastTextPreview")
         if preview and latest_text_preview_any is None:
             latest_text_preview_any = preview
@@ -321,6 +596,10 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
         latest.get("role") if latest.get("message.lastTextPreview") or latest_tool_output_preview else ("assistant" if latest_assistant_text_preview else latest_text_preview_any_role)
     )
 
+    event_ledger = collapse_events([event for events in per_message_events for event in events])[-EVENT_LEDGER_MAX:]
+    accumulated_event_summary = summarize_event_ledger(event_ledger)
+    latest_user_input = next((event for event in reversed(event_ledger) if event.get("kind") == "user_input" and not event.get("ignored")), None)
+
     return {
         "latestMessage": latest,
         "latestTextPreview": latest_text_preview,
@@ -329,6 +608,10 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
         "latestAssistantTextPreview": latest_assistant_text_preview,
         "latestAssistantTextPreviewMessageId": latest_assistant_text_preview_message_id,
         "latestToolOutputPreview": latest_tool_output_preview,
+        "latestUserInputSummary": latest_user_input.get("summary") if latest_user_input else None,
+        "latestUserInputMessageId": latest_user_input.get("messageId") if latest_user_input else None,
+        "accumulatedEventSummary": accumulated_event_summary,
+        "eventLedger": event_ledger or None,
         "messageWindowSize": len(normalized_messages),
     }
 
@@ -361,6 +644,10 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
         "latestAssistantTextPreview": message_summary.get("latestAssistantTextPreview"),
         "latestAssistantTextPreviewMessageId": message_summary.get("latestAssistantTextPreviewMessageId"),
         "latestToolOutputPreview": message_summary.get("latestToolOutputPreview"),
+        "latestUserInputSummary": message_summary.get("latestUserInputSummary"),
+        "latestUserInputMessageId": message_summary.get("latestUserInputMessageId"),
+        "accumulatedEventSummary": message_summary.get("accumulatedEventSummary"),
+        "eventLedger": message_summary.get("eventLedger"),
         "messageWindowSize": message_summary.get("messageWindowSize"),
         "todo": normalize_todo(todo),
         "status": status,

@@ -38,7 +38,7 @@ def run_capture(script_name: str, args: list[str]) -> str:
     return proc.stdout
 
 
-def short(text, n=120):
+def short(text, n=200):
     if not text:
         return None
     text = " ".join(str(text).split())
@@ -49,7 +49,8 @@ def latest_meaningful_preview(payload):
     snapshot = payload.get("snapshot") or {}
     latest = snapshot.get("latestMessage") or {}
     preview = (
-        snapshot.get("latestAssistantTextPreview")
+        snapshot.get("accumulatedEventSummary")
+        or snapshot.get("latestAssistantTextPreview")
         or snapshot.get("latestTextPreview")
         or latest.get("message.lastTextPreview")
         or latest.get("textPreview")
