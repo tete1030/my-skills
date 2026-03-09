@@ -10,6 +10,7 @@ from opencode_delivery_handoff import build_delivery_handoff  # noqa: E402
 from opencode_openclaw_agent_call import (  # noqa: E402
     AGENT_CALL_KIND,
     build_gateway_agent_call,
+    build_idempotency_basis,
     execute_gateway_agent_call,
 )
 
@@ -36,8 +37,8 @@ class OpenClawAgentCallTests(unittest.TestCase):
             },
         }
 
-    def ready_handoff(self, *, dry_run: bool = False):
-        return build_delivery_handoff(self.ready_turn(), dry_run=dry_run)
+    def ready_handoff(self, *, dry_run: bool = False, turn: dict | None = None):
+        return build_delivery_handoff(turn or self.ready_turn(), dry_run=dry_run)
 
     def test_ready_handoff_builds_gateway_agent_call_plan(self):
         handoff = self.ready_handoff()
@@ -67,6 +68,77 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertIn("openclaw gateway call agent", plan["shellCommand"])
         self.assertFalse(plan["executed"])
         self.assertIsNone(plan["execution"])
+
+    def test_idempotency_key_ignores_cadence_only_changes(self):
+        first_turn = self.ready_turn()
+        first_turn["factSkeleton"]["status"] = "completed"
+        first_turn["factSkeleton"]["phase"] = None
+        first_turn["factSkeleton"]["reason"] = "status=completed"
+        first_turn["cadence"] = {
+            "decision": "visible_update",
+            "noChange": True,
+            "consecutiveNoChangeCount": 5,
+            "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+        }
+
+        second_turn = json.loads(json.dumps(first_turn))
+        second_turn["cadence"]["consecutiveNoChangeCount"] = 7
+        second_turn["cadence"]["lastVisibleUpdateAt"] = "2026-03-08T11:02:30+00:00"
+
+        first_handoff = self.ready_handoff(turn=first_turn)
+        second_handoff = self.ready_handoff(turn=second_turn)
+        first_plan = build_gateway_agent_call(first_handoff)
+        second_plan = build_gateway_agent_call(second_handoff)
+
+        self.assertEqual(
+            first_plan["gatewayParams"]["idempotencyKey"],
+            second_plan["gatewayParams"]["idempotencyKey"],
+        )
+
+        first_basis = build_idempotency_basis(
+            first_plan["sessionKey"],
+            first_handoff["openclawDelivery"]["systemEventTemplate"]["payload"]["text"],
+        )
+        self.assertEqual(
+            first_basis,
+            {
+                "kind": "opencode_origin_session_handoff_idempotency_v1",
+                "sessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "routing": {
+                    "originSession": "agent:main:telegram:group:-100123:topic:42",
+                    "originTarget": "telegram:-100123:topic:42",
+                },
+                "action": "send_update",
+                "updateType": "completed",
+                "facts": {
+                    "status": "completed",
+                    "latestMeaningfulPreview": "Released v0.3.4 successfully.",
+                },
+            },
+        )
+
+    def test_idempotency_key_changes_when_business_facts_change(self):
+        first_turn = self.ready_turn()
+        first_turn["factSkeleton"]["status"] = "completed"
+        first_turn["factSkeleton"]["phase"] = None
+        first_turn["factSkeleton"]["reason"] = "status=completed"
+        first_turn["cadence"] = {
+            "decision": "visible_update",
+            "noChange": True,
+            "consecutiveNoChangeCount": 5,
+            "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+        }
+
+        second_turn = json.loads(json.dumps(first_turn))
+        second_turn["factSkeleton"]["latestMeaningfulPreview"] = "Released v0.3.5 successfully."
+
+        first_plan = build_gateway_agent_call(self.ready_handoff(turn=first_turn))
+        second_plan = build_gateway_agent_call(self.ready_handoff(turn=second_turn))
+
+        self.assertNotEqual(
+            first_plan["gatewayParams"]["idempotencyKey"],
+            second_plan["gatewayParams"]["idempotencyKey"],
+        )
 
     def test_non_ready_handoff_stays_dry_run_without_command(self):
         turn_result = {

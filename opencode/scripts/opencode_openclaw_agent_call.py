@@ -27,6 +27,8 @@ ALLOWED_AGENT_CALL_KEYS = frozenset({
 })
 ALLOWED_EXECUTION_KEYS = frozenset({"returncode", "stdout", "stderr"})
 AGENT_CALL_KIND = "openclaw_gateway_agent_call_v1"
+STABLE_IDEMPOTENCY_FACT_KEYS = ("status", "phase", "latestMeaningfulPreview")
+STABLE_IDEMPOTENCY_ROUTING_KEYS = ("originSession", "originTarget")
 
 
 def load_json_input(value: str):
@@ -68,8 +70,41 @@ def assert_agent_call_boundary(result: dict) -> dict:
     return result
 
 
-def build_idempotency_key(session_key: str, system_event_text: str) -> str:
-    digest = hashlib.sha256(f"{session_key}\n{system_event_text}".encode("utf-8")).hexdigest()
+def _stable_subset(source: dict, allowed_keys: tuple[str, ...]) -> dict:
+    return {
+        key: source[key]
+        for key in allowed_keys
+        if key in source and source[key] is not None
+    }
+
+
+def build_idempotency_basis(
+    session_key: str,
+    system_event_text: str,
+    *,
+    envelope: dict | None = None,
+) -> dict:
+    safe_envelope = envelope or decode_system_event_text(system_event_text)
+    agent_input = safe_envelope["agentInput"]
+    return {
+        "kind": "opencode_origin_session_handoff_idempotency_v1",
+        "sessionKey": session_key,
+        "routing": _stable_subset(agent_input.get("routing") or {}, STABLE_IDEMPOTENCY_ROUTING_KEYS),
+        "action": agent_input.get("action"),
+        "updateType": agent_input.get("updateType"),
+        "facts": _stable_subset(agent_input.get("facts") or {}, STABLE_IDEMPOTENCY_FACT_KEYS),
+    }
+
+
+def build_idempotency_key(
+    session_key: str,
+    system_event_text: str,
+    *,
+    envelope: dict | None = None,
+) -> str:
+    basis = build_idempotency_basis(session_key, system_event_text, envelope=envelope)
+    canonical = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"opencode-origin-handoff-{digest[:32]}"
 
 
@@ -123,7 +158,7 @@ def build_gateway_agent_call(
         "sessionKey": session_key,
         "message": build_agent_message(system_event_text),
         "deliver": True,
-        "idempotencyKey": build_idempotency_key(session_key, system_event_text),
+        "idempotencyKey": build_idempotency_key(session_key, system_event_text, envelope=envelope),
     }
     argv = [
         "openclaw",

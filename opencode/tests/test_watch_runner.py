@@ -7,6 +7,8 @@ from pathlib import Path
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
+from opencode_delivery_handoff import build_delivery_handoff  # noqa: E402
+from opencode_openclaw_agent_call import build_gateway_agent_call  # noqa: E402
 from opencode_watch_runner import (  # noqa: E402
     action_key_from_agent_call,
     decide_watch_action,
@@ -70,6 +72,45 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertFalse(action["shouldExecute"])
         self.assertTrue(action["duplicateSuppressed"])
         self.assertEqual(action["reason"], "duplicate_action_key")
+
+    def test_live_mode_suppresses_second_run_when_only_cadence_changes(self):
+        first_turn = {
+            "factSkeleton": {
+                "status": "completed",
+                "phase": None,
+                "latestMeaningfulPreview": "Validated the final output.",
+                "reason": "status=completed",
+            },
+            "shouldSend": True,
+            "delivery": {
+                "originSession": "agent:main:telegram:group:-100123:topic:42",
+                "originTarget": "telegram:-100123:topic:42",
+            },
+            "cadence": {
+                "decision": "visible_update",
+                "noChange": True,
+                "consecutiveNoChangeCount": 5,
+                "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+            },
+        }
+        second_turn = json.loads(json.dumps(first_turn))
+        second_turn["cadence"]["consecutiveNoChangeCount"] = 6
+        second_turn["cadence"]["lastVisibleUpdateAt"] = "2026-03-08T11:02:30+00:00"
+
+        first_agent_call = build_gateway_agent_call(build_delivery_handoff(first_turn, dry_run=False))
+        second_agent_call = build_gateway_agent_call(build_delivery_handoff(second_turn, dry_run=False))
+
+        first_action = decide_watch_action(first_agent_call, {}, live=True)
+        second_action = decide_watch_action(
+            second_agent_call,
+            {"lastExecutedActionKey": first_action["actionKey"]},
+            live=True,
+        )
+
+        self.assertEqual(first_action["operation"], "execute")
+        self.assertEqual(second_action["operation"], "skip_duplicate")
+        self.assertTrue(second_action["duplicateSuppressed"])
+        self.assertEqual(first_action["actionKey"], second_action["actionKey"])
 
     def test_non_ready_agent_call_skips_before_live_or_dry_run(self):
         agent_call = self.ready_agent_call()
