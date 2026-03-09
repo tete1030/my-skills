@@ -3,6 +3,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
@@ -12,6 +13,7 @@ from opencode_openclaw_agent_call import build_gateway_agent_call  # noqa: E402
 from opencode_watch_runner import (  # noqa: E402
     action_key_from_agent_call,
     decide_watch_action,
+    should_stop_for_idle_timeout,
     update_watch_state,
 )
 
@@ -144,12 +146,38 @@ class WatchRunnerTests(unittest.TestCase):
                     "reason": "ready_inject_live",
                 },
                 agent_call=agent_call,
+                turn={
+                    "factSkeleton": {
+                        "status": "completed",
+                        "phase": "done",
+                        "latestMeaningfulPreview": "Validated the final output.",
+                        "reason": "status=completed",
+                    },
+                    "cadence": {
+                        "decision": "visible_update",
+                        "noChange": True,
+                        "consecutiveNoChangeCount": 0,
+                        "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+                    },
+                },
             )
 
             self.assertEqual(watch_state["lastExecutedActionKey"], "opencode-origin-handoff-abc123")
             reloaded = json.loads(state_path.read_text())
             self.assertEqual(reloaded["watchRunner"]["lastExecutedActionKey"], "opencode-origin-handoff-abc123")
             self.assertEqual(reloaded["status"], "running")
+
+    def test_terminal_state_can_trigger_idle_timeout_exit(self):
+        watch_state = {
+            "idleEligibleSince": "2026-03-08T10:00:00+00:00",
+            "lastActivityAt": "2026-03-08T10:00:00+00:00",
+        }
+
+        with mock.patch("opencode_watch_runner.now_utc") as now_utc:
+            from datetime import datetime, timezone
+
+            now_utc.return_value = datetime(2026, 3, 8, 10, 20, 0, tzinfo=timezone.utc)
+            self.assertTrue(should_stop_for_idle_timeout(watch_state, idle_timeout_sec=600))
 
 
 if __name__ == "__main__":

@@ -12,6 +12,22 @@ OpenClaw skills and related design docs.
 
 The skill package is intentionally isolated from the higher-level design docs so the skill can evolve without forcing all design/iteration material into the runtime skill payload.
 
+## OpenCode Manager (Phase 1)
+
+Use the manager entrypoint for the new Phase 1 session/watcher workflow:
+
+- `python3 opencode/scripts/opencode_manager.py start ...`
+- `python3 opencode/scripts/opencode_manager.py attach ...`
+- `python3 opencode/scripts/opencode_manager.py list-sessions ...`
+- `python3 opencode/scripts/opencode_manager.py inspect ...`
+- `python3 opencode/scripts/opencode_manager.py list-watchers ...`
+
+Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
+Manager-facing JSON/config fields keep the naming split explicit:
+
+- OpenCode: `opencodeSessionId`, `opencodeWorkspace`
+- OpenClaw: `openclawSessionKey`, `openclawDeliveryTarget`
+
 ## Thin watcher runtime
 
 For repeated long-run watcher use, keep real runtime config local-only under `.local/` and use the thin wrapper instead of retyping the full `opencodectl.py watch ...` command each time.

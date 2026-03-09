@@ -91,6 +91,51 @@ class WatchRuntimeTests(unittest.TestCase):
         self.assertEqual(command[0], sys.executable)
         self.assertEqual(command[2], "watch")
 
+    def test_build_watch_command_accepts_manager_named_fields(self):
+        paths = RuntimePaths(
+            config=Path("/tmp/config.json"),
+            state=Path("/tmp/state.json"),
+            log=Path("/tmp/watch.log"),
+        )
+        config = {
+            "opencodeBaseUrl": "http://127.0.0.1:4096",
+            "opencodeSessionId": "ses_demo",
+            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            "watchIntervalSec": 15,
+            "idleTimeoutSec": 900,
+            "watchLive": True,
+        }
+
+        command = build_watch_command(paths, config, once=False, live_override=None)
+
+        self.assertIn("--loop", command)
+        self.assertIn("--live", command)
+        self.assertIn("--idle-timeout-sec", command)
+        self.assertIn("900", command)
+        self.assertIn("--origin-session", command)
+        self.assertIn("agent:main:telegram:group:-100123:topic:42", command)
+
+    def test_runtime_paths_resolve_manager_named_state_and_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            config_path = Path(tmpdir) / "runtime" / "config.json"
+            config_path.parent.mkdir(parents=True)
+            args = Namespace(
+                name=DEFAULT_RUNTIME_NAME,
+                config=str(config_path),
+                state=None,
+                log=None,
+            )
+            config = {
+                "watchStatePath": "manager-state.json",
+                "watchLogPath": "manager-watch.log",
+            }
+
+            paths = runtime_paths_for_args(args, config)
+
+            self.assertEqual(paths.state, (config_path.parent / "manager-state.json").resolve())
+            self.assertEqual(paths.log, (config_path.parent / "manager-watch.log").resolve())
+
 
 if __name__ == "__main__":
     unittest.main()

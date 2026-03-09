@@ -89,6 +89,8 @@ The intended consumption order is:
 
 For the deliberately tiny single-session watcher MVP, `watch` is still the underlying loop, but repeated long-run operation should prefer the thin runtime wrapper so local config, state, and logs stay in one ignored runtime directory.
 
+For Phase 1 manager orchestration, prefer `python3 scripts/opencode_manager.py ...` for create/attach/list/inspect/list-watchers flows. Manager-facing fields must keep the naming split explicit: `opencodeSessionId` / `opencodeWorkspace` vs `openclawSessionKey` / `openclawDeliveryTarget`.
+
 Tracked example config:
 
 ```bash

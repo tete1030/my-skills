@@ -145,6 +145,7 @@ def cmd_watch(args) -> int:
         "--message-limit", str(args.message_limit),
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
         "--interval-sec", str(args.interval_sec),
+        "--idle-timeout-sec", str(args.idle_timeout_sec),
     ]
     if args.origin_session:
         command += ["--origin-session", args.origin_session]
@@ -277,6 +278,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--message-limit", type=int, default=10)
     p_watch.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_watch.add_argument("--interval-sec", type=int, default=60)
+    p_watch.add_argument("--idle-timeout-sec", type=int, default=0)
     p_watch.add_argument("--loop", action="store_true")
     p_watch.add_argument("--live", action="store_true")
     p_watch.set_defaults(func=cmd_watch)
