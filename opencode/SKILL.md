@@ -160,18 +160,24 @@ Prefer this manager flow unless you are actively building or debugging the runti
 
 ## Polling boundary: do not become a second watcher
 
-Use `inspect` and related manager reads as **one-off understanding tools**, not as a continuous monitoring loop.
+Use `inspect` and related manager reads as **one-off understanding tools**, not as a waiting loop.
 
-Use active polling only when it adds immediate decision value, for example:
+Allowed `inspect` cases are narrow:
 
 - initial takeover / understanding of an existing OpenCode session
 - an explicit user request to check current state
 - a one-off decision point before sending a follow-up prompt
+- watcher anomaly diagnosis
 
-Once you have the needed context and an appropriate watcher is attached, stop actively polling for progress.
-During normal running, the watcher is the progress source.
-Do **not** keep issuing `inspect` just to notice silence, stalls, or eventual completion.
-Those ongoing observations belong to watcher-side monitoring/timers, not the main agent.
+After `start` or `continue --ensure-watcher`, once the watcher is attached and you have the initial context you need, **stop active progress polling**.
+During normal running, watcher updates are the progress source.
+Do **not** use `sleep + inspect` or repeated `inspect` calls to wait for completion, silence, or stalls.
+
+Anti-patterns:
+
+- `sleep 20 && python3 scripts/opencode_manager.py inspect ...`
+- `while ...; do python3 scripts/opencode_manager.py inspect ...; done`
+- “just one more inspect to confirm completion” after watcher-driven progress is already active
 
 ## How to interpret runtime/event updates
 
