@@ -158,6 +158,21 @@ For a normal user request, use this sequence:
 
 Prefer this manager flow unless you are actively building or debugging the runtime chain itself.
 
+## Polling boundary: do not become a second watcher
+
+Use `inspect` and related manager reads as **one-off understanding tools**, not as a continuous monitoring loop.
+
+Use active polling only when it adds immediate decision value, for example:
+
+- initial takeover / understanding of an existing OpenCode session
+- an explicit user request to check current state
+- a one-off decision point before sending a follow-up prompt
+
+Once you have the needed context and an appropriate watcher is attached, stop actively polling for progress.
+During normal running, the watcher is the progress source.
+Do **not** keep issuing `inspect` just to notice silence, stalls, or eventual completion.
+Those ongoing observations belong to watcher-side monitoring/timers, not the main agent.
+
 ## How to interpret runtime/event updates
 
 Watcher-delivered runtime updates are **internal progress inputs** for the main OpenClaw agent, not prewritten chat replies.
