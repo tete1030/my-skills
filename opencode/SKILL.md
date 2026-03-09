@@ -171,6 +171,9 @@ Allowed `inspect` cases are narrow:
 
 After `start` or `continue --ensure-watcher`, once the watcher is attached and you have the initial context you need, **stop active progress polling**.
 During normal running, watcher updates are the progress source.
+Manager results now make this explicit with `progressSource`, `agentShouldPoll`, `recommendedNextAction`, and `userFacingAck`.
+If `progressSource=watcher` and `agentShouldPoll=false`, acknowledge that OpenCode work has been handed off to the watcher, then end the turn.
+A typical live handoff uses `recommendedNextAction=wait_for_runtime_updates`.
 Do **not** use `sleep + inspect` or repeated `inspect` calls to wait for completion, silence, or stalls.
 
 Anti-patterns:

@@ -30,6 +30,10 @@ DEFAULT_MESSAGE_LIMIT = 10
 DEFAULT_TIMEOUT_SEC = 20
 DEFAULT_STOP_TIMEOUT_SEC = 10
 WATCH_RUNTIME_START_KIND = "opencode_watch_runtime_start_v1"
+WATCHER_HANDOFF_ACK = "已交给 OpenCode，后续进展会由 watcher 继续回到当前 OpenClaw 会话。"
+NON_LIVE_WATCHER_ACK = "OpenCode 已收到请求，但当前 watcher 未处于 live 回传模式；后续不会自动回到这个 OpenClaw 会话。"
+MISSING_WATCHER_ACK = "OpenCode 已收到请求，但当前没有 live watcher 把后续进展回传到这个 OpenClaw 会话。"
+NO_WATCHER_ACK = "OpenCode 已收到请求；当前没有 watcher 负责把后续进展回传到这个 OpenClaw 会话。"
 
 
 def now_utc() -> datetime:
@@ -541,6 +545,45 @@ def build_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
 
 
 
+def build_agent_handoff_contract(
+    *,
+    watcher_entry: dict[str, Any] | None,
+    watcher_requested: bool,
+) -> dict[str, Any]:
+    watcher_status = watcher_entry.get("watcherStatus") if isinstance(watcher_entry, dict) else None
+    watch_live = bool(watcher_entry.get("watchLive")) if isinstance(watcher_entry, dict) else False
+    watcher_running = watcher_status == "running"
+
+    if watcher_running and watch_live:
+        return {
+            "progressSource": "watcher",
+            "agentShouldPoll": False,
+            "recommendedNextAction": "wait_for_runtime_updates",
+            "userFacingAck": WATCHER_HANDOFF_ACK,
+        }
+    if watcher_running:
+        return {
+            "progressSource": "manager_result_only",
+            "agentShouldPoll": False,
+            "recommendedNextAction": "acknowledge_no_live_watcher",
+            "userFacingAck": NON_LIVE_WATCHER_ACK,
+        }
+    if watcher_requested:
+        return {
+            "progressSource": "manager_result_only",
+            "agentShouldPoll": False,
+            "recommendedNextAction": "acknowledge_missing_watcher",
+            "userFacingAck": MISSING_WATCHER_ACK,
+        }
+    return {
+        "progressSource": "manager_result_only",
+        "agentShouldPoll": False,
+        "recommendedNextAction": "acknowledge_async_without_watcher",
+        "userFacingAck": NO_WATCHER_ACK,
+    }
+
+
+
 def spawn_watcher(entry: dict[str, Any]) -> int:
     watcher_config_path = Path(entry["watcherConfigPath"])
     watcher_log_path = Path(entry["watcherLogPath"])
@@ -1012,7 +1055,7 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_timeout_sec=args.watch_timeout_sec,
     )
 
-    return {
+    result = {
         "kind": "opencode_manager_start_v1",
         "opencodeSession": build_session_summary(created_session, watcher_entry=watcher_entry),
         "firstPrompt": {
@@ -1023,6 +1066,8 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         "watcher": build_watcher_summary(watcher_entry),
         "registryPath": str(registry_path),
     }
+    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=True))
+    return result
 
 
 
@@ -1112,6 +1157,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     if watcher_payload:
         result["watcher"] = watcher_payload["watcher"]
         result["watcherAlreadyRunning"] = bool(watcher_payload["alreadyRunning"])
+    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=bool(args.ensure_watcher)))
     return result
 
 

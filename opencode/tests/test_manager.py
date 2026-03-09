@@ -10,6 +10,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_manager import (  # noqa: E402
+    build_agent_handoff_contract,
     build_manager_watcher_config,
     build_parser,
     build_watcher_summary,
@@ -19,6 +20,7 @@ from opencode_manager import (  # noqa: E402
     list_watchers_command,
     refresh_registry_entry,
     save_json_object,
+    start_command,
     start_or_attach_watcher,
     stop_watcher_command,
 )
@@ -104,6 +106,30 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(manager_config["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
         self.assertNotIn("session_id", manager_config)
         self.assertNotIn("origin_session", manager_config)
+
+    def test_build_agent_handoff_contract_prefers_live_watcher_updates(self):
+        contract = build_agent_handoff_contract(
+            watcher_entry={"watcherStatus": "running", "watchLive": True},
+            watcher_requested=True,
+        )
+
+        self.assertEqual(contract["progressSource"], "watcher")
+        self.assertFalse(contract["agentShouldPoll"])
+        self.assertEqual(contract["recommendedNextAction"], "wait_for_runtime_updates")
+        self.assertIn("OpenCode", contract["userFacingAck"])
+        self.assertIn("OpenClaw", contract["userFacingAck"])
+
+    def test_build_agent_handoff_contract_makes_missing_live_handoff_explicit(self):
+        contract = build_agent_handoff_contract(
+            watcher_entry={"watcherStatus": "running", "watchLive": False},
+            watcher_requested=True,
+        )
+
+        self.assertEqual(contract["progressSource"], "manager_result_only")
+        self.assertFalse(contract["agentShouldPoll"])
+        self.assertEqual(contract["recommendedNextAction"], "acknowledge_no_live_watcher")
+        self.assertIn("OpenCode", contract["userFacingAck"])
+        self.assertIn("OpenClaw", contract["userFacingAck"])
 
     def test_refresh_registry_entry_marks_dead_process_exited(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -241,6 +267,50 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(watcher["opencodeSessionId"], "ses_recovered")
             self.assertEqual(watcher["watchProcessId"], 54321)
 
+    def test_start_command_returns_live_watcher_handoff_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start",
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
+                openclaw_delivery_target="telegram:-100123:topic:42",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ):
+                result = start_command(args)
+
+            self.assertEqual(result["progressSource"], "watcher")
+            self.assertFalse(result["agentShouldPoll"])
+            self.assertEqual(result["recommendedNextAction"], "wait_for_runtime_updates")
+            self.assertIn("OpenCode", result["userFacingAck"])
+            self.assertIn("OpenClaw", result["userFacingAck"])
+            fake_client.prompt_session.assert_called_once()
+
     def test_continue_command_can_ensure_watcher_using_previous_binding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -291,6 +361,7 @@ class OpenCodeManagerTests(unittest.TestCase):
             fake_watcher = {
                 "watcherId": "ow_new",
                 "watcherStatus": "running",
+                "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
                 "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
@@ -305,6 +376,49 @@ class OpenCodeManagerTests(unittest.TestCase):
             mocked_start.assert_called_once()
             self.assertEqual(mocked_start.call_args.kwargs["openclaw_session_key"], "agent:main:telegram:group:-100123:topic:42")
             self.assertEqual(result["watcher"]["watcherId"], "ow_new")
+            self.assertEqual(result["progressSource"], "watcher")
+            self.assertFalse(result["agentShouldPoll"])
+            self.assertEqual(result["recommendedNextAction"], "wait_for_runtime_updates")
+            self.assertIn("OpenCode", result["userFacingAck"])
+            self.assertIn("OpenClaw", result["userFacingAck"])
+            fake_client.prompt_session.assert_called_once()
+
+    def test_continue_command_without_active_watcher_returns_explicit_non_handoff_contract(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                ensure_watcher=False,
+                openclaw_session_key=None,
+                openclaw_delivery_target=None,
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                registry_path=str(registry_path),
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ):
+                result = continue_command(args)
+
+            self.assertEqual(result["progressSource"], "manager_result_only")
+            self.assertFalse(result["agentShouldPoll"])
+            self.assertEqual(result["recommendedNextAction"], "acknowledge_async_without_watcher")
+            self.assertIn("OpenCode", result["userFacingAck"])
+            self.assertIn("OpenClaw", result["userFacingAck"])
+            self.assertNotIn("watcher", result)
             fake_client.prompt_session.assert_called_once()
 
     def test_stop_watcher_updates_registry(self):
@@ -485,10 +599,18 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertNotIn("sessionId", summary)
         self.assertNotIn("originSession", summary)
 
-    def test_readme_uses_real_continue_flag_names(self):
+    def test_readme_mentions_handoff_contract_fields(self):
         readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
         self.assertIn("--follow-up-prompt", readme)
         self.assertIn("--ensure-watcher", readme)
+        self.assertIn("progressSource", readme)
+        self.assertIn("agentShouldPoll", readme)
+
+    def test_skill_mentions_manager_handoff_contract(self):
+        skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("progressSource", skill)
+        self.assertIn("agentShouldPoll", skill)
+        self.assertIn("wait_for_runtime_updates", skill)
 
 
 if __name__ == "__main__":

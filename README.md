@@ -33,6 +33,8 @@ Notes:
 - `stop-watcher` stops a running watcher cleanly but keeps the OpenCode session.
 - `detach` removes the watcher binding without deleting the OpenCode session.
 - `detach` now returns `detachStatus` so callers can distinguish `detached_now`, `already_detached`, and `not_found` without guessing from a bare boolean.
+- `start` and `continue` now also return an agent-facing handoff contract: `progressSource`, `agentShouldPoll`, `recommendedNextAction`, and `userFacingAck`.
+  - When `progressSource=watcher`, the watcher is the progress source and the agent should acknowledge handoff instead of polling.
 - Registry refresh now also recovers watcher metadata from local watcher dirs/config/state/logs under `.local/opencode-manager/...` and clears stale logical locks when the recorded watcher process is no longer the matching runtime.
 
 Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
