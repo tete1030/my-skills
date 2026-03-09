@@ -27,9 +27,12 @@ Use the manager entrypoint for the current session/watcher workflow:
 
 Notes:
 
-- `continue` sends a follow-up prompt to an existing OpenCode session and can `--ensure-watcher` for that session.
+- `continue` uses the real CLI flags `--follow-up-prompt` and, when needed, `--ensure-watcher`.
+- Example:
+  - `python3 opencode/scripts/opencode_manager.py continue --opencode-base-url http://127.0.0.1:4096 --opencode-session-id ses_demo --follow-up-prompt "Please continue and send me a short summary." --ensure-watcher`
 - `stop-watcher` stops a running watcher cleanly but keeps the OpenCode session.
 - `detach` removes the watcher binding without deleting the OpenCode session.
+- `detach` now returns `detachStatus` so callers can distinguish `detached_now`, `already_detached`, and `not_found` without guessing from a bare boolean.
 - Registry refresh now also recovers watcher metadata from local watcher dirs/config/state/logs under `.local/opencode-manager/...` and clears stale logical locks when the recorded watcher process is no longer the matching runtime.
 
 Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.

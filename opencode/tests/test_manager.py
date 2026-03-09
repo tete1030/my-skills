@@ -352,14 +352,93 @@ class OpenCodeManagerTests(unittest.TestCase):
             ):
                 result = detach_command(args)
 
+            self.assertEqual(result["detachStatus"], "detached_now")
+            self.assertIn("OpenClaw", result["detachSummary"])
+            self.assertIn("OpenCode", result["detachSummary"])
             self.assertTrue(result["detached"])
+            self.assertTrue(result["targetFound"])
+            self.assertTrue(result["activeWatcherFound"])
+            self.assertTrue(result["noActiveOpenclawBindingRemaining"])
             self.assertEqual(result["watcherCount"], 1)
+            self.assertEqual(result["detachedWatcherCount"], 1)
             self.assertEqual(result["watchers"][0]["watchExitReason"], "manager_detach")
             registry = __import__("opencode_manager").load_json_object(registry_path)
             self.assertEqual(registry["watchers"][0]["watcherStatus"], "exited")
             self.assertEqual(registry["watchers"][0]["watchExitReason"], "manager_detach")
             state = __import__("opencode_manager").load_json_object(state_path)
             self.assertEqual(state["watchRunner"]["lastExitReason"], "manager_detach")
+
+    def test_detach_reports_already_detached_when_target_exists_but_is_not_running(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, _config_path, state_path = self._write_registry_running_entry(tmpdir, watcher_id="ow_detached")
+            save_json_object(
+                registry_path,
+                {
+                    "kind": "opencode_manager_registry_v1",
+                    "watchers": [
+                        {
+                            "watcherId": "ow_detached",
+                            "watcherStatus": "exited",
+                            "watchProcessAlive": False,
+                            "opencodeSessionId": "ses_demo",
+                            "opencodeWorkspace": "/tmp/demo-workspace",
+                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                            "watchExitReason": "manager_detach",
+                            "watcherStatePath": str(state_path),
+                            "watcherConfigPath": str(Path(tmpdir) / "watchers" / "ow_detached" / "config.json"),
+                            "watcherLogPath": str(Path(tmpdir) / "watchers" / "ow_detached" / "watch.log"),
+                        }
+                    ],
+                },
+            )
+            save_json_object(state_path, {"watchRunner": {"lastExitReason": "manager_detach"}})
+            args = Namespace(
+                registry_path=str(registry_path),
+                watcher_id=None,
+                opencode_session_id="ses_demo",
+                stop_timeout_sec=5,
+            )
+
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value={}):
+                result = detach_command(args)
+
+            self.assertEqual(result["detachStatus"], "already_detached")
+            self.assertFalse(result["detached"])
+            self.assertTrue(result["targetFound"])
+            self.assertFalse(result["activeWatcherFound"])
+            self.assertTrue(result["noActiveOpenclawBindingRemaining"])
+            self.assertEqual(result["watcherCount"], 1)
+            self.assertEqual(result["detachedWatcherCount"], 0)
+            self.assertEqual(result["watchers"][0]["watcherStatus"], "exited")
+            self.assertEqual(result["watchers"][0]["watchExitReason"], "manager_detach")
+            self.assertIn("OpenClaw", result["detachSummary"])
+            self.assertIn("OpenCode", result["detachSummary"])
+
+    def test_detach_reports_not_found_when_no_matching_binding_exists(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                registry_path=str(registry_path),
+                watcher_id=None,
+                opencode_session_id="ses_missing",
+                stop_timeout_sec=5,
+            )
+
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value={}):
+                result = detach_command(args)
+
+            self.assertEqual(result["detachStatus"], "not_found")
+            self.assertFalse(result["detached"])
+            self.assertFalse(result["targetFound"])
+            self.assertFalse(result["activeWatcherFound"])
+            self.assertFalse(result["noActiveOpenclawBindingRemaining"])
+            self.assertEqual(result["watcherCount"], 0)
+            self.assertEqual(result["detachedWatcherCount"], 0)
+            self.assertEqual(result["watchers"], [])
+            self.assertIn("OpenClaw", result["detachSummary"])
+            self.assertIn("OpenCode", result["detachSummary"])
 
     def test_parser_exposes_phase2_subcommands(self):
         parser = build_parser()
@@ -379,6 +458,15 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_continue.opencode_session_id, "ses_demo")
         self.assertTrue(parsed_continue.ensure_watcher)
 
+        subparser_action = next(
+            action
+            for action in parser._actions
+            if isinstance(getattr(action, "choices", None), dict) and "continue" in action.choices
+        )
+        continue_help = subparser_action.choices["continue"].format_help()
+        self.assertIn("--follow-up-prompt", continue_help)
+        self.assertIn("--ensure-watcher", continue_help)
+
         parsed_stop = parser.parse_args(["stop-watcher", "--watcher-id", "ow_demo123"])
         self.assertEqual(parsed_stop.command, "stop-watcher")
         self.assertEqual(parsed_stop.watcher_id, "ow_demo123")
@@ -396,6 +484,11 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("openclawSessionKey", summary)
         self.assertNotIn("sessionId", summary)
         self.assertNotIn("originSession", summary)
+
+    def test_readme_uses_real_continue_flag_names(self):
+        readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
+        self.assertIn("--follow-up-prompt", readme)
+        self.assertIn("--ensure-watcher", readme)
 
 
 if __name__ == "__main__":

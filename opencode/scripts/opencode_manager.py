@@ -861,7 +861,7 @@ def stop_watcher_entry(
 
 
 
-def select_running_entries(
+def select_matching_entries(
     registry: dict[str, Any],
     *,
     watcher_id: str | None,
@@ -869,14 +869,30 @@ def select_running_entries(
 ) -> list[dict[str, Any]]:
     matches = []
     for entry in registry.get("watchers") or []:
-        if entry.get("watcherStatus") != "running":
-            continue
         if watcher_id and entry.get("watcherId") != watcher_id:
             continue
         if opencode_session_id and entry.get("opencodeSessionId") != opencode_session_id:
             continue
         matches.append(entry)
     return matches
+
+
+
+def select_running_entries(
+    registry: dict[str, Any],
+    *,
+    watcher_id: str | None,
+    opencode_session_id: str | None,
+) -> list[dict[str, Any]]:
+    return [
+        entry
+        for entry in select_matching_entries(
+            registry,
+            watcher_id=watcher_id,
+            opencode_session_id=opencode_session_id,
+        )
+        if entry.get("watcherStatus") == "running"
+    ]
 
 
 
@@ -1139,11 +1155,12 @@ def detach_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
     with locked_registry(registry_path) as (registry, _path):
         refresh_registry_entries(registry, registry_path=registry_path)
-        targets = select_running_entries(
+        matching_entries = select_matching_entries(
             registry,
             watcher_id=args.watcher_id,
             opencode_session_id=args.opencode_session_id,
         )
+        targets = [entry for entry in matching_entries if entry.get("watcherStatus") == "running"]
         detached_watchers = [
             stop_watcher_entry(
                 entry,
@@ -1156,12 +1173,34 @@ def detach_command(args: argparse.Namespace) -> dict[str, Any]:
         detached_by_id = {entry.get("watcherId"): entry for entry in detached_watchers}
         registry["watchers"] = [detached_by_id.get(entry.get("watcherId"), entry) for entry in registry.get("watchers") or []]
 
+    if detached_watchers:
+        detach_status = "detached_now"
+        result_watchers = detached_watchers
+        no_active_openclaw_binding_remaining = True
+        detach_summary = "Detached watcher binding(s) now; no active OpenClaw binding remains for the targeted OpenCode session."
+    elif matching_entries:
+        detach_status = "already_detached"
+        result_watchers = matching_entries
+        no_active_openclaw_binding_remaining = True
+        detach_summary = "Watcher binding already detached; no active OpenClaw binding remains for the targeted OpenCode session."
+    else:
+        detach_status = "not_found"
+        result_watchers = []
+        no_active_openclaw_binding_remaining = False
+        detach_summary = "No matching OpenClaw watcher binding was found for the requested OpenCode target."
+
     return {
         "kind": "opencode_manager_detach_v1",
         "registryPath": str(registry_path),
+        "detachStatus": detach_status,
+        "detachSummary": detach_summary,
         "detached": bool(detached_watchers),
-        "watcherCount": len(detached_watchers),
-        "watchers": [build_watcher_summary(entry) for entry in detached_watchers],
+        "targetFound": bool(matching_entries),
+        "activeWatcherFound": bool(targets),
+        "noActiveOpenclawBindingRemaining": no_active_openclaw_binding_remaining,
+        "watcherCount": len(result_watchers),
+        "detachedWatcherCount": len(detached_watchers),
+        "watchers": [build_watcher_summary(entry) for entry in result_watchers],
         "target": {
             "watcherId": args.watcher_id,
             "opencodeSessionId": args.opencode_session_id,
@@ -1243,7 +1282,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     continue_parser = sub.add_parser(
         "continue",
-        help="send a follow-up prompt to an existing OpenCode session and optionally ensure a watcher is attached",
+        help="send --follow-up-prompt to an existing OpenCode session and optionally ensure a watcher via --ensure-watcher",
+        description="Send --follow-up-prompt to an existing OpenCode session and optionally ensure a watcher via --ensure-watcher.",
     )
     continue_parser.add_argument("--opencode-base-url", required=True)
     continue_parser.add_argument("--opencode-token")
