@@ -1,5 +1,7 @@
 # OpenCode 主 Session 中心执行方案
 
+> 另见：`opencode-observer-boundary.md`，用于记录当前 observer / event-model 边界与验证结论。
+
 ## 目标
 
 设计一套适合 OpenClaw 编排的 OpenCode 执行与巡查机制，同时满足以下要求：
