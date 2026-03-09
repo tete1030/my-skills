@@ -1,95 +1,214 @@
 ---
 name: opencode
-description: Design and operate an OpenCode→OpenClaw loop with a main-session-centered model. Prefer `scripts/opencodectl.py turn` for the happy path, `delivery-handoff` for origin-session handoffs, `openclaw-agent-call` for the current `openclaw gateway call agent` bridge, and keep `agent-turn-input` only as an optional compact helper. Use when refining turn boundaries, cadence, routing, or the structured fact output consumed by the main session.
+description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage; use `scripts/opencodectl.py turn/watch/...` only for runtime wiring or debugging. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user.
 ---
 
 # Opencode
 
-Keep this skill centered on one idea:
+Use this skill in two modes:
 
-- `turn` emits mechanical facts, cadence, and routing.
-- The main-session agent decides whether to speak and writes the final explanation.
-- `delivery-handoff` prepares the structured origin-session handoff, not user-facing chat text.
-- `openclaw-agent-call` turns that handoff into the current practical `openclaw gateway call agent` injection path using `sessionKey`.
-- The transported handoff already carries the compact decision input the originating main-session agent needs; no extra script layer is required to "consume" it.
+1. **Normal conversation-driven usage:** use `scripts/opencode_manager.py`.
+2. **Runtime wiring / debugging:** use `scripts/opencodectl.py` and the references.
 
-## Core rules
+Do not make the agent memorize a broad internal script zoo. For ordinary user requests, the manager is the control surface.
 
-- Keep the **main session** as the decision owner and visible narrative owner.
-- Treat timed/event triggers as **inputs**, not as the conversation owner.
-- Treat user chat messages as **high-priority control input** when they change goals, constraints, pause/resume state, or visibility expectations.
-- Prefer `python3 scripts/opencodectl.py turn ...` for normal operation.
-- Prefer `python3 scripts/opencodectl.py delivery-handoff --input <turn.json>` when the next layer needs an origin-session handoff.
-- Prefer `python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>` when the next layer needs the concrete `openclaw gateway call agent` shape.
-- Use `python3 scripts/opencodectl.py agent-turn-input --input <turn.json>` only when the main agent wants to inspect the compact recommendation object directly.
-- Let scripts emit **facts + cadence + origin routing**.
-- Do **not** let scripts emit final chat prose, plans, strategy trees, or rewritten delivery.
-- Keep origin-session preservation explicit.
-- Keep environment-specific details out of the skill package.
+## Distinguish the objects first
 
-## Read order
+Keep these three things separate:
 
-1. `references/runtime-loop.md`
-2. `references/turn-contract.md`
-3. `references/delivery-handoff.md` when you need the origin-session delivery handoff or the `openclaw gateway call agent` bridge shape
-4. `references/api-surface.md` only when changing snapshot/API assumptions
+- **OpenCode session**: the remote coding task/session (`opencodeSessionId`) running in an OpenCode workspace.
+- **OpenClaw session**: the chat/session that should receive progress or results (`openclawSessionKey`, sometimes called origin session).
+- **Watcher**: a local runtime process that observes one OpenCode session and can inject structured progress back into one OpenClaw session.
 
-## Happy path
+A user may stay in the **same OpenClaw chat** while you create, inspect, continue, stop, or reattach **different OpenCode sessions**.
+Do not confuse “current OpenClaw conversation” with “current OpenCode work session”.
 
-Primary command:
+Field naming is intentional:
 
-```bash
-python3 scripts/opencodectl.py turn \
-  --base-url <url> \
-  --session-id <session-id> \
-  --state <state.json> \
-  [--control <control.json>] \
-  [--origin-session <session>] \
-  [--origin-target <target>] \
-  [--write]
-```
+- OpenCode side: `opencodeSessionId`, `opencodeWorkspace`
+- OpenClaw side: `openclawSessionKey`, `openclawDeliveryTarget`
 
-Use `--control` when the same chat turn also changes execution policy or control state.
-That control should influence the decision pass itself, not become narrative output.
+## Exact command surface
 
-Use `delivery-handoff` when the next layer needs a structured origin-session handoff that preserves the original task-initiating session and still does **not** author chat text:
+For normal usage, use the manager subcommands exactly as implemented:
+
+- `start`
+- `attach`
+- `continue`
+- `list-sessions`
+- `inspect`
+- `list-watchers`
+- `stop-watcher`
+- `detach`
+
+Do **not** invent aliases like `create`, `list`, `start-watch`, `stop-watch`, or `detach-watch`.
+If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`.
+
+## When to use which command
+
+### Start a new OpenCode task in a workspace
+
+Use `start` when the user wants OpenCode to begin fresh work in a workspace.
+This creates a new OpenCode session, sends the first prompt, and attaches a watcher.
 
 ```bash
-python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json>
+python3 scripts/opencode_manager.py start \
+  --opencode-base-url <url> \
+  --opencode-workspace <workspace> \
+  --openclaw-session-key <origin-session-key> \
+  --first-prompt '<task prompt>'
 ```
 
-`delivery-handoff` also accepts a legacy `agent-turn-input` payload, but the preferred path is to hand it the raw `turn` result.
-It will compact that into the same mechanical main-agent input internally.
+Add `--watch-live` only when you are ready for live progress injection.
+Without it, keep things dry-run/safe where applicable.
 
-Use `openclaw-agent-call` when you want the concrete OpenClaw CLI bridge from that handoff into the originating session:
+### List existing OpenCode sessions in a workspace
+
+Use `list-sessions` when you need to find the right existing task before continuing or attaching.
+Use this first if the user says “check my OpenCode work in this repo/workspace” or “what session is already running?”.
 
 ```bash
-python3 scripts/opencodectl.py openclaw-agent-call --input <delivery-handoff.json>
+python3 scripts/opencode_manager.py list-sessions \
+  --opencode-base-url <url> \
+  --opencode-workspace <workspace>
 ```
 
-For a tighter CLI chain, both `delivery-handoff` and `openclaw-agent-call` accept `--input -`, so you can pipe them without temp files:
+### Inspect one OpenCode session
+
+Use `inspect` when you already know the `opencodeSessionId` and need normalized status, recent work, and recent event summary.
+This is the right command for “what is this session doing now?”
 
 ```bash
-python3 scripts/opencodectl.py delivery-handoff --input <turn-result.json> --live-ready \
-  | python3 scripts/opencodectl.py openclaw-agent-call --input - --execute
+python3 scripts/opencode_manager.py inspect \
+  --opencode-base-url <url> \
+  --opencode-session-id <session-id>
 ```
 
-Default behavior is dry-run planning.
-Add `--execute` only when the handoff is already marked live-ready and you want to run the generated `openclaw gateway call agent` invocation.
+### Continue an existing OpenCode session
 
-Use `agent-turn-input` only when you want to inspect that compact recommendation object by itself:
+Use `continue` when the task should keep going in an existing OpenCode session instead of starting fresh.
+This sends `--follow-up-prompt` to that existing session.
 
 ```bash
-python3 scripts/opencodectl.py agent-turn-input --input <turn-result.json>
+python3 scripts/opencode_manager.py continue \
+  --opencode-base-url <url> \
+  --opencode-session-id <session-id> \
+  --follow-up-prompt '<follow-up prompt>'
 ```
 
-The intended consumption order is:
+Add `--ensure-watcher` when you also need to make sure that session has an active watcher bound to the intended OpenClaw session.
+If you use `--ensure-watcher`, also supply `--openclaw-session-key` (and optionally `--openclaw-delivery-target`) so the binding is explicit.
+
+### Attach a watcher to an existing OpenCode session
+
+Use `attach` when the OpenCode session already exists but is not yet being watched for this OpenClaw conversation.
+Typical cases:
+
+- the session predates the current chat request
+- the watcher was never started
+- the watcher was stopped and needs to be restored
+- you want progress routed to a specific OpenClaw session
+
+```bash
+python3 scripts/opencode_manager.py attach \
+  --opencode-base-url <url> \
+  --opencode-session-id <session-id> \
+  --openclaw-session-key <origin-session-key>
+```
+
+### List watcher bindings
+
+Use `list-watchers` when you need to know which OpenCode sessions currently have active local watcher processes.
+This is the safest first step if you are unsure whether monitoring is already attached.
+
+```bash
+python3 scripts/opencode_manager.py list-watchers
+```
+
+### Stop a watcher
+
+Use `stop-watcher` when you want to stop the currently running watcher process cleanly **without deleting the OpenCode session**.
+The remote OpenCode task/session remains.
+
+```bash
+python3 scripts/opencode_manager.py stop-watcher --opencode-session-id <session-id>
+```
+
+### Detach a watcher binding
+
+Use `detach` when you want to remove the active OpenClaw watcher binding for an OpenCode session **without deleting the OpenCode session**.
+In practice this is the “this OpenCode session should no longer be attached to this OpenClaw flow” command.
+
+```bash
+python3 scripts/opencode_manager.py detach --opencode-session-id <session-id>
+```
+
+## Default operating recipe
+
+For a normal user request, use this sequence:
+
+1. **Need fresh work?** -> `start`
+2. **Need to find an old session first?** -> `list-sessions`
+3. **Need to understand one existing session?** -> `inspect`
+4. **Need to keep an old session going?** -> `continue`
+5. **Need progress routed back here?** -> `attach` or `continue --ensure-watcher`
+6. **Need to see current watcher bindings?** -> `list-watchers`
+7. **Need to stop monitoring only?** -> `stop-watcher`
+8. **Need to remove the OpenClaw binding?** -> `detach`
+
+Prefer this manager flow unless you are actively building or debugging the runtime chain itself.
+
+## How to interpret runtime/event updates
+
+Watcher-delivered runtime updates are **internal progress inputs** for the main OpenClaw agent, not prewritten chat replies.
+Treat them like structured background-worker callbacks.
+
+Rules:
+
+- `systemEvent` / `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` payloads are transport envelopes, not user-facing text.
+- `status`, `phase`, `latestMeaningfulPreview`, `reason`, and cadence are the important facts.
+- Do **not** echo raw JSON, transport headers, or mechanical runtime wording back to the user.
+- Do **not** reply with “received runtime update” or narrate watcher plumbing unless the user explicitly asks about the plumbing.
+- If a visible reply is needed, write a natural task-centered update in the existing conversation.
+- If no visible reply is needed, stay silent; the runtime input still matters internally.
+
+### Noise handling
+
+`ignored=true` plugin events may still appear in raw ledgers for debugging.
+Treat them as low-priority noise unless another meaningful signal confirms they matter.
+They should not dominate your interpretation of session state.
+
+Prefer this order when understanding what happened:
+
+1. `latestMeaningfulPreview`
+2. `recentEventSummary` / accumulated meaningful event summary
+3. current `status` and `phase`
+4. raw `eventLedger` only for debugging or ambiguity resolution
+
+Do not turn every tool call or plugin blip into a visible chat update.
+User-facing replies should summarize the task state, not the transport trace.
+
+## Use lower-level runtime tools only when needed
+
+Use `scripts/opencodectl.py` only when you are wiring or debugging the runtime path itself.
+That includes:
+
+- `turn`
+- `delivery-handoff`
+- `openclaw-agent-call`
+- `watch`
+- `agent-turn-input`
+- `explain-turn`
+
+Happy-path lower-level chain:
 
 `turn -> delivery-handoff -> openclaw-agent-call -> openclaw gateway call agent(sessionKey=originSession) -> main-session agent decides visible reply`
 
-For the deliberately tiny single-session watcher MVP, `watch` is still the underlying loop, but repeated long-run operation should prefer the thin runtime wrapper so local config, state, and logs stay in one ignored runtime directory.
+For repeated long-run watching, prefer the thin runtime wrapper:
 
-For Phase 1 manager orchestration, prefer `python3 scripts/opencode_manager.py ...` for create/attach/list/inspect/list-watchers flows. Manager-facing fields must keep the naming split explicit: `opencodeSessionId` / `opencodeWorkspace` vs `openclawSessionKey` / `openclawDeliveryTarget`.
+```bash
+python3 scripts/opencode_watch_runtime.py --name default
+```
 
 Tracked example config:
 
@@ -98,55 +217,34 @@ mkdir -p ../.local/opencode/watch/default
 cp examples/watch-runtime.example.json ../.local/opencode/watch/default/config.json
 ```
 
-Long-run entrypoint:
-
-```bash
-python3 scripts/opencode_watch_runtime.py --name default
-```
-
-Default convention for a named runtime profile:
+Default runtime profile layout:
 
 - config: `.local/opencode/watch/<name>/config.json`
 - state: `.local/opencode/watch/<name>/state.json`
 - log: `.local/opencode/watch/<name>/watch.log`
 
-Use `--once` for a single dry-run-style step, or `--live` / `--dry-run` to override the config for that run.
+## Read order when you need deeper details
 
-If you need the raw lower-level command directly, `watch` still works the same way:
-
-```bash
-python3 scripts/opencodectl.py watch \
-  --base-url <url> \
-  --session-id <session-id> \
-  --state .local/opencode-watch-state.json \
-  --origin-session <origin-session> \
-  --origin-target <origin-target>
-```
-
-Add `--live` to actually execute the ready `openclaw gateway call agent` handoff.
-Add `--loop --interval-sec 60` for fixed-interval polling.
-Default mode is one dry-run step, which is the safest way to verify the session id, origin routing, and duplicate suppression state before turning it live.
-
-Cron may reuse the same structured payload only as a watchdog/safety net.
-It is not the primary consumer.
-
-Use `explain-turn` or lower-level commands only for debugging.
-Do not make the agent memorize the lower-level scripts for routine use.
+1. `references/runtime-loop.md`
+2. `references/turn-contract.md`
+3. `references/delivery-handoff.md` when you need the injected origin-session handoff semantics
+4. `references/api-surface.md` only when checking remote API assumptions
 
 ## Keep / avoid
 
 Keep:
-- `turn`
-- `delivery-handoff` for origin-session handoffs
-- `openclaw-agent-call` for the concrete OpenClaw CLI bridge
-- `agent-turn-input` as an optional helper / debug surface
-- `explain-turn` for debugging
-- `api-surface` when integration assumptions change
+
+- `opencode_manager.py` as the everyday control surface
+- exact subcommand names
+- explicit separation between OpenCode sessions, OpenClaw sessions, and watcher bindings
+- natural user-facing replies based on runtime facts
+- raw event ledgers only as debug material
 
 Avoid:
-- `origin-session-consume` as a required happy-path layer
-- parallel/manual-heavy operating recipes as the default path
-- overlapping references that restate the same boundary in different words
-- preserving old fallback guidance when it blurs the happy path
-- treating cron as the primary consumer of turn output
-- environment-specific notes or lab details inside the committed skill
+
+- using lower-level runtime scripts as the default user-facing workflow
+- confusing the current chat session with the current OpenCode session
+- inventing manager subcommand aliases
+- echoing transport headers, JSON, or runtime task updates mechanically
+- letting `ignored=true` plugin noise outweigh meaningful progress signals
+- treating watcher output as the final conversation narrative

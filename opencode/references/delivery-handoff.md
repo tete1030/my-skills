@@ -151,6 +151,17 @@ It carries:
 This is intentionally **not user-facing prose**.
 The bridge may forward it as the body of an `openclaw gateway call agent` request, but that does not change ownership: the originating main-session agent still decides whether/how to explain it to the user.
 
+### Main-agent interpretation rule
+
+Treat the injected payload as an **internal runtime/progress input**.
+Use it to update your understanding of task state, not as text to parrot back.
+
+- do read `status`, `phase`, `latestMeaningfulPreview`, cadence, and routing
+- do write any visible reply in natural task-centered language
+- do stay silent when cadence/reason says no visible update is needed
+- do not echo the `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` header, raw JSON, or transport mechanics
+- do not let `ignored=true` plugin noise outweigh the accumulated meaningful summary unless debugging requires it
+
 ### Bridge to OpenClaw CLI
 
 To turn a ready handoff into the current practical transport call:
