@@ -543,7 +543,8 @@ def inspection_current_state(inspection_result: dict[str, Any]) -> dict[str, Any
 
 
 def inspection_latest_message(inspection_result: dict[str, Any]) -> dict[str, Any]:
-    latest_message = inspection_result.get("latestMessage") if isinstance(inspection_result.get("latestMessage"), dict) else {}
+    inspection = inspection_result.get("inspection") if isinstance(inspection_result.get("inspection"), dict) else {}
+    latest_message = inspection.get("latestMessage") if isinstance(inspection.get("latestMessage"), dict) else {}
     return latest_message
 
 
@@ -924,7 +925,9 @@ def evaluate_workspace_business_completion(run_id: str, history_messages: list[d
     assistant_messages = [
         message
         for message in history_messages
-        if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "assistant"
+        if isinstance(message, dict)
+        and str(message.get("role") or "").strip().lower() == "assistant"
+        and str(message.get("status") or "").strip().lower() == "completed"
     ]
     assistant_messages.sort(key=lambda item: int(item.get("recentIndex") or 0), reverse=True)
     start_message = assistant_messages[0] if len(assistant_messages) >= 2 else None
