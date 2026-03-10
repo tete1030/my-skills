@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -16,7 +17,7 @@ from typing import Any, Iterator
 import fcntl
 
 from opencode_api_client import OpenCodeClient
-from opencode_snapshot import build_compact_snapshot
+from opencode_snapshot import build_compact_snapshot, build_event_record, clean_preview, compact_latest_message, shorten_path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
@@ -27,8 +28,15 @@ DEFAULT_WATCHER_ROOT = REPO_ROOT / ".local" / "opencode-manager" / "watchers"
 DEFAULT_WATCH_INTERVAL_SEC = 60
 DEFAULT_IDLE_TIMEOUT_SEC = 900
 DEFAULT_MESSAGE_LIMIT = 10
+DEFAULT_HISTORY_MESSAGE_LIMIT = 25
 DEFAULT_TIMEOUT_SEC = 20
 DEFAULT_STOP_TIMEOUT_SEC = 10
+DEFAULT_HISTORY_ANCHOR_COUNT = 6
+DETAIL_TEXT_LIMIT = 1200
+DETAIL_TEXT_PREVIEW_LIMIT = 240
+DETAIL_OUTPUT_TAIL_LINES = 4
+DETAIL_OUTPUT_TAIL_LINE_LIMIT = 180
+ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 WATCH_RUNTIME_START_KIND = "opencode_watch_runtime_start_v1"
 WATCHER_HANDOFF_ACK = "已交给 OpenCode，后续进展会由 watcher 继续回到当前 OpenClaw 会话。"
 NON_LIVE_WATCHER_ACK = "OpenCode 已收到请求，但当前 watcher 未处于 live 回传模式；后续不会自动回到这个 OpenClaw 会话。"
@@ -651,6 +659,410 @@ def build_rehydration_watcher_state(watcher_entry: dict[str, Any] | None) -> dic
 
 
 
+def normalize_message_collection(messages: Any) -> list[dict[str, Any]]:
+    if isinstance(messages, list):
+        items = messages
+    elif isinstance(messages, dict):
+        for key in ("items", "messages", "data"):
+            candidate = messages.get(key)
+            if isinstance(candidate, list):
+                items = candidate
+                break
+        else:
+            items = [messages]
+    elif messages is None:
+        items = []
+    else:
+        items = [messages]
+    return [item for item in items if isinstance(item, dict)]
+
+
+
+def strip_ansi_text(value: Any) -> str:
+    return ANSI_RE.sub("", str(value or ""))
+
+
+
+def compact_multiline_text(
+    value: Any,
+    *,
+    preview_limit: int = DETAIL_TEXT_PREVIEW_LIMIT,
+    text_limit: int = DETAIL_TEXT_LIMIT,
+) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    text = str(value).replace("\r\n", "\n").replace("\r", "\n").strip()
+    if not text:
+        return None
+    compacted = text if len(text) <= text_limit else text[: text_limit - 1] + "…"
+    return {
+        "preview": preview_text(text, limit=preview_limit),
+        "text": compacted,
+        "truncated": len(compacted) < len(text),
+        "charCount": len(text),
+        "lineCount": text.count("\n") + 1,
+    }
+
+
+
+def extract_candidate_dicts(part: dict[str, Any], tool_state: dict[str, Any]) -> list[dict[str, Any]]:
+    candidates = [
+        part,
+        part.get("input"),
+        part.get("arguments"),
+        part.get("args"),
+        tool_state,
+        tool_state.get("input"),
+        tool_state.get("metadata"),
+    ]
+    metadata_input = tool_state.get("metadata", {}).get("input") if isinstance(tool_state.get("metadata"), dict) else None
+    if isinstance(metadata_input, dict):
+        candidates.append(metadata_input)
+    return [candidate for candidate in candidates if isinstance(candidate, dict)]
+
+
+
+def extract_first_scalar(candidate_dicts: list[dict[str, Any]], keys: tuple[str, ...]) -> Any:
+    for candidate in candidate_dicts:
+        for key in keys:
+            value = candidate.get(key)
+            if value is not None and value != "":
+                return value
+    return None
+
+
+
+def collect_path_targets(candidate_dicts: list[dict[str, Any]]) -> list[str] | None:
+    path_keys = (
+        "path",
+        "paths",
+        "file",
+        "files",
+        "file_path",
+        "filePath",
+        "filePaths",
+        "target",
+        "targets",
+        "destination",
+        "dest",
+        "outPath",
+        "outputPath",
+    )
+    seen: set[str] = set()
+    targets: list[str] = []
+
+    def add_value(value: Any) -> None:
+        if isinstance(value, dict):
+            for key in path_keys:
+                if value.get(key) is not None:
+                    add_value(value.get(key))
+            return
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                add_value(item)
+            return
+        if not isinstance(value, str):
+            return
+        target = shorten_path(value, limit=140)
+        if not target or target == "/dev/null" or target in seen:
+            return
+        seen.add(target)
+        targets.append(target)
+
+    for candidate in candidate_dicts:
+        for key in path_keys:
+            if candidate.get(key) is not None:
+                add_value(candidate.get(key))
+    return targets or None
+
+
+
+def infer_targets_from_text(value: Any) -> list[str] | None:
+    if value is None:
+        return None
+    text = strip_ansi_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    matches: list[str] = []
+    seen: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        candidate: str | None = None
+        for prefix in ("Index: ", "--- ", "+++ "):
+            if line.startswith(prefix):
+                candidate = line[len(prefix):].strip()
+                break
+        if candidate is None:
+            match = re.match(r"^[AMDRCU?]\s+(.+)$", line)
+            if match:
+                candidate = match.group(1).strip()
+        if not candidate or candidate == "/dev/null":
+            continue
+        shortened = shorten_path(candidate, limit=140)
+        if not shortened or shortened in seen:
+            continue
+        seen.add(shortened)
+        matches.append(shortened)
+    return matches or None
+
+
+
+def infer_tool_action(tool_name: Any) -> str:
+    normalized = str(tool_name or "").strip().lower()
+    if normalized in {"read", "view", "cat"}:
+        return "read"
+    if normalized in {"write", "create", "overwrite"}:
+        return "write"
+    if normalized in {"edit", "apply_patch", "patch"} or "patch" in normalized:
+        return "patch"
+    if normalized in {"bash", "shell", "exec", "terminal", "sh", "zsh"}:
+        return "shell"
+    return "tool"
+
+
+
+def build_output_detail(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    raw_text = strip_ansi_text(value).replace("\r\n", "\n").replace("\r", "\n")
+    preview = clean_preview(raw_text, limit=DETAIL_TEXT_PREVIEW_LIMIT) or preview_text(raw_text, limit=DETAIL_TEXT_PREVIEW_LIMIT)
+    if not preview:
+        return None
+    lines = [" ".join(line.split()) for line in raw_text.splitlines() if line.strip()]
+    tail_lines = [preview_text(line, limit=DETAIL_OUTPUT_TAIL_LINE_LIMIT) for line in lines[-DETAIL_OUTPUT_TAIL_LINES:]]
+    tail_lines = [line for line in tail_lines if line]
+    detail = {
+        "preview": preview,
+        "tailLines": tail_lines or None,
+        "charCount": len(raw_text),
+        "lineCount": raw_text.count("\n") + 1 if raw_text else 0,
+    }
+    return {key: value for key, value in detail.items() if value is not None}
+
+
+
+def build_tool_write_detail(tool_name: str, candidate_dicts: list[dict[str, Any]]) -> dict[str, Any] | None:
+    normalized = tool_name.lower()
+    result: dict[str, Any] = {}
+    if normalized == "write":
+        content = extract_first_scalar(candidate_dicts, ("content", "text", "buffer"))
+        content_detail = compact_multiline_text(content, preview_limit=220, text_limit=DETAIL_TEXT_LIMIT)
+        if content_detail:
+            result["contentPreview"] = content_detail.get("preview")
+            result["contentCharCount"] = content_detail.get("charCount")
+            result["content"] = content_detail.get("text")
+            result["contentTruncated"] = content_detail.get("truncated")
+    if normalized in {"edit", "apply_patch", "patch"} or "patch" in normalized:
+        old_text = extract_first_scalar(candidate_dicts, ("oldText", "old_string", "old"))
+        new_text = extract_first_scalar(candidate_dicts, ("newText", "new_string", "new", "content"))
+        patch_text = extract_first_scalar(candidate_dicts, ("patch", "diff"))
+        old_detail = compact_multiline_text(old_text, preview_limit=160, text_limit=600)
+        new_detail = compact_multiline_text(new_text, preview_limit=200, text_limit=800)
+        patch_detail = compact_multiline_text(patch_text, preview_limit=220, text_limit=1000)
+        if old_detail:
+            result["oldTextPreview"] = old_detail.get("preview")
+            result["oldTextCharCount"] = old_detail.get("charCount")
+        if new_detail:
+            result["newTextPreview"] = new_detail.get("preview")
+            result["newTextCharCount"] = new_detail.get("charCount")
+            result["newText"] = new_detail.get("text")
+            result["newTextTruncated"] = new_detail.get("truncated")
+        if patch_detail:
+            result["patchPreview"] = patch_detail.get("preview")
+            result["patchCharCount"] = patch_detail.get("charCount")
+            result["patch"] = patch_detail.get("text")
+            result["patchTruncated"] = patch_detail.get("truncated")
+    return {key: value for key, value in result.items() if value is not None} or None
+
+
+
+def build_message_anchor(message: dict[str, Any], *, recent_index: int) -> dict[str, Any]:
+    normalized = compact_latest_message(message)
+    anchor = {
+        "recentIndex": recent_index,
+        "messageId": normalized.get("id"),
+        "role": normalized.get("role"),
+        "status": normalized.get("status"),
+        "createdAt": iso_from_epoch_ms(normalized.get("created")),
+        "preview": normalized.get("message.lastTextPreview") or normalized.get("toolOutputPreview"),
+        "toolNames": normalized.get("toolNames"),
+    }
+    return {key: value for key, value in anchor.items() if value is not None}
+
+
+
+def build_message_detail(message: dict[str, Any], *, recent_index: int) -> dict[str, Any]:
+    normalized = compact_latest_message(message)
+    info = message.get("info") if isinstance(message.get("info"), dict) else {}
+    parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+
+    tool_calls: list[dict[str, Any]] = []
+    events: list[dict[str, Any]] = []
+    text_parts: list[dict[str, Any]] = []
+    info_time = info.get("time") if isinstance(info.get("time"), dict) else {}
+
+    for part_index, part in enumerate(parts):
+        if not isinstance(part, dict):
+            continue
+        part_type = str(part.get("type") or "").strip().lower()
+        tool_state = part.get("state") if isinstance(part.get("state"), dict) else {}
+        event = build_event_record(message, part)
+        if event:
+            event_detail = {
+                "eventIndex": len(events),
+                "partIndex": part_index,
+                "kind": event.get("kind"),
+                "summary": event.get("summary"),
+                "toolName": event.get("toolName"),
+                "toolStatus": event.get("toolStatus"),
+                "createdAt": iso_from_epoch_ms(event.get("created")),
+            }
+            events.append({key: value for key, value in event_detail.items() if value is not None})
+
+        if part_type == "text":
+            text_detail = compact_multiline_text(part.get("text"), preview_limit=DETAIL_TEXT_PREVIEW_LIMIT, text_limit=DETAIL_TEXT_LIMIT)
+            if text_detail:
+                text_part = {
+                    "partIndex": part_index,
+                    "role": normalized.get("role"),
+                    "summary": text_detail.get("preview"),
+                    "text": text_detail.get("text"),
+                    "textTruncated": text_detail.get("truncated"),
+                    "charCount": text_detail.get("charCount"),
+                    "lineCount": text_detail.get("lineCount"),
+                }
+                text_parts.append({key: value for key, value in text_part.items() if value is not None})
+            continue
+
+        if part_type != "tool":
+            continue
+
+        tool_name = str(part.get("tool") or "").strip()
+        tool_status = str(tool_state.get("status") or "").strip().lower() or None
+        candidate_dicts = extract_candidate_dicts(part, tool_state)
+        action = infer_tool_action(tool_name)
+        tool_metadata = tool_state.get("metadata") if isinstance(tool_state.get("metadata"), dict) else {}
+        raw_output = tool_state.get("output") or tool_metadata.get("output")
+        targets = collect_path_targets(candidate_dicts)
+        if not targets:
+            targets = infer_targets_from_text(
+                extract_first_scalar(candidate_dicts, ("patch", "diff"))
+                or raw_output
+            )
+        output_detail = build_output_detail(raw_output)
+        command_preview = preview_text(
+            extract_first_scalar(candidate_dicts, ("command", "cmd", "script", "shellCommand", "literal", "text")),
+            limit=220,
+        )
+        write_detail = build_tool_write_detail(tool_name, candidate_dicts) or {}
+
+        tool_call = {
+            "partIndex": part_index,
+            "toolName": tool_name or None,
+            "toolStatus": tool_status,
+            "action": action,
+            "targets": targets,
+            "readTargets": targets if action == "read" else None,
+            "writeTargets": targets if action == "write" else None,
+            "patchTargets": targets if action == "patch" else None,
+            "commandPreview": command_preview,
+            "outputPreview": output_detail.get("preview") if output_detail else None,
+            "outputTailLines": output_detail.get("tailLines") if output_detail else None,
+            "outputCharCount": output_detail.get("charCount") if output_detail else None,
+            "outputLineCount": output_detail.get("lineCount") if output_detail else None,
+            **write_detail,
+        }
+        tool_calls.append({key: value for key, value in tool_call.items() if value is not None})
+
+    result = {
+        "messageId": normalized.get("id") or info.get("id") or message.get("id"),
+        "recentIndex": recent_index,
+        "role": normalized.get("role") or info.get("role") or message.get("role"),
+        "status": normalized.get("status"),
+        "createdAt": iso_from_epoch_ms(normalized.get("created") or info_time.get("created") or message.get("created")),
+        "completedAt": iso_from_epoch_ms(normalized.get("completedAt") or info_time.get("completed") or message.get("completed")),
+        "finish": normalized.get("finish") or info.get("finish") or message.get("finish"),
+        "ignored": bool(normalized.get("ignored")),
+        "partTypes": normalized.get("partTypes"),
+        "textPreview": normalized.get("message.lastTextPreview"),
+        "toolOutputPreview": normalized.get("toolOutputPreview"),
+        "partCount": len(parts),
+        "toolCallCount": len(tool_calls),
+        "eventCount": len(events),
+        "textParts": text_parts or None,
+        "toolCalls": tool_calls or None,
+        "events": events or None,
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+
+def select_history_message(messages: list[dict[str, Any]], *, message_id: str | None, recent_index: int | None) -> tuple[dict[str, Any], int, int]:
+    if not messages:
+        raise ValueError("inspect-history requires at least one message in the fetched window")
+
+    if message_id:
+        for absolute_index, message in enumerate(messages):
+            normalized = compact_latest_message(message)
+            candidate_id = normalized.get("id") or (message.get("info") or {}).get("id") or message.get("id")
+            if candidate_id == message_id:
+                return message, absolute_index, len(messages) - 1 - absolute_index
+        raise ValueError(f"inspect-history could not find messageId in fetched window: {message_id}")
+
+    resolved_recent_index = 0 if recent_index is None else recent_index
+    if resolved_recent_index < 0:
+        raise ValueError("inspect-history --recent-index must be >= 0 (0 means latest message)")
+    absolute_index = len(messages) - 1 - resolved_recent_index
+    if absolute_index < 0 or absolute_index >= len(messages):
+        raise ValueError(
+            f"inspect-history --recent-index={resolved_recent_index} is outside the fetched window of {len(messages)} messages"
+        )
+    return messages[absolute_index], absolute_index, resolved_recent_index
+
+
+
+def build_history_detail(
+    session_data: dict[str, Any],
+    messages: list[dict[str, Any]],
+    *,
+    watcher_entry: dict[str, Any] | None = None,
+    message_limit: int,
+    selected_message_id: str | None,
+    selected_recent_index: int | None,
+) -> dict[str, Any]:
+    selected_message, absolute_index, recent_index = select_history_message(
+        messages,
+        message_id=selected_message_id,
+        recent_index=selected_recent_index,
+    )
+    anchor_count = min(DEFAULT_HISTORY_ANCHOR_COUNT, len(messages))
+    recent_slice = messages[-anchor_count:]
+    recent_anchors = [
+        build_message_anchor(message, recent_index=len(recent_slice) - 1 - index)
+        for index, message in enumerate(recent_slice)
+    ]
+    recent_anchors.sort(key=lambda item: item.get("recentIndex", 0))
+
+    result = {
+        "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
+        "selection": {
+            key: value
+            for key, value in {
+                "messageId": compact_latest_message(selected_message).get("id") or (selected_message.get("info") or {}).get("id") or selected_message.get("id"),
+                "recentIndex": recent_index,
+                "absoluteIndex": absolute_index,
+                "messageCountInWindow": len(messages),
+                "messageWindowLimit": message_limit,
+                "mayExcludeOlderHistory": len(messages) >= message_limit,
+            }.items()
+            if value is not None
+        },
+        "recentAnchors": recent_anchors,
+        "message": build_message_detail(selected_message, recent_index=recent_index),
+        "watcher": build_watcher_summary(watcher_entry) if watcher_entry else None,
+    }
+    return {key: value for key, value in result.items() if value is not None}
+
+
+
 def build_inspection(
     session_data: dict[str, Any],
     snapshot: dict[str, Any],
@@ -1226,6 +1638,56 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
 
 
 
+def inspect_history_command(args: argparse.Namespace) -> dict[str, Any]:
+    registry_path = Path(args.registry_path).expanduser().resolve()
+    client = OpenCodeClient(
+        base_url=args.opencode_base_url,
+        token=resolve_opencode_token(args.opencode_token, getattr(args, "opencode_token_env", None)),
+        timeout=args.watch_timeout_sec,
+    )
+    session_data = ensure_session_exists(
+        client,
+        opencode_session_id=args.opencode_session_id,
+        opencode_workspace=args.opencode_workspace,
+    )
+    messages = normalize_message_collection(
+        client.session_messages(
+            args.opencode_session_id,
+            limit=args.history_message_limit,
+            directory=args.opencode_workspace,
+        )
+    )
+
+    with locked_registry(registry_path) as (registry, _path):
+        refresh_registry_entries(registry, registry_path=registry_path)
+        watcher_entry = next(
+            (
+                entry
+                for entry in registry.get("watchers") or []
+                if entry.get("opencodeSessionId") == args.opencode_session_id and entry.get("watcherStatus") == "running"
+            ),
+            None,
+        )
+
+    selected_recent_index = args.recent_index
+    if args.message_id is None and selected_recent_index is None:
+        selected_recent_index = 0
+
+    history = build_history_detail(
+        session_data,
+        messages,
+        watcher_entry=watcher_entry,
+        message_limit=args.history_message_limit,
+        selected_message_id=args.message_id,
+        selected_recent_index=selected_recent_index,
+    )
+    return {
+        "kind": "opencode_manager_inspect_history_v1",
+        "history": {key: value for key, value in history.items() if value is not None},
+    }
+
+
+
 def list_watchers_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
     with locked_registry(registry_path) as (registry, _path):
@@ -1541,7 +2003,7 @@ def add_watcher_target_options(command_parser: argparse.ArgumentParser) -> None:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Phase 2 OpenCode manager: create or attach watchers, continue existing sessions, inspect state, stop/detach watchers, and recover local watcher registry entries."
+        description="Phase 2 OpenCode manager: create or attach watchers, continue existing sessions, inspect state, drill into recent history, stop/detach watchers, and recover local watcher registry entries."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
@@ -1589,6 +2051,25 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     inspect_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
     inspect_parser.set_defaults(func=inspect_command)
+
+    inspect_history_parser = sub.add_parser(
+        "inspect-history",
+        help="drill into one recent OpenCode message with detailed text/tool/output context",
+        description="Drill into one recent OpenCode message with detailed text/tool/output context without bloating the default inspect hot path.",
+    )
+    inspect_history_parser.add_argument("--opencode-base-url", required=True)
+    inspect_history_parser.add_argument("--opencode-token")
+    inspect_history_parser.add_argument("--opencode-token-env")
+    inspect_history_parser.add_argument("--opencode-workspace")
+    inspect_history_parser.add_argument("--opencode-session-id", required=True)
+    selector_group = inspect_history_parser.add_mutually_exclusive_group()
+    selector_group.add_argument("--message-id")
+    selector_group.add_argument("--recent-index", type=int)
+    selector_group.add_argument("--latest", action="store_true")
+    inspect_history_parser.add_argument("--history-message-limit", type=int, default=DEFAULT_HISTORY_MESSAGE_LIMIT)
+    inspect_history_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
+    inspect_history_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
+    inspect_history_parser.set_defaults(func=inspect_history_command)
 
     watchers_parser = sub.add_parser("list-watchers", help="show watcher registry entries")
     watchers_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))

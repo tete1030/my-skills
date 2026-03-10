@@ -19,6 +19,7 @@ from opencode_manager import (  # noqa: E402
     create_watcher_entry,
     detach_command,
     inspect_command,
+    inspect_history_command,
     list_watchers_command,
     refresh_registry_entry,
     save_json_object,
@@ -408,6 +409,148 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(rehydration["watcherState"]["watcherStatus"], "running")
             self.assertEqual(rehydration["watcherState"]["watcherId"], "ow_demo123")
 
+    def test_inspect_history_command_surfaces_patch_targets_and_new_text(self):
+        args = Namespace(
+            registry_path="/tmp/opencode-history-registry.json",
+            opencode_base_url="http://127.0.0.1:4096",
+            opencode_token=None,
+            opencode_token_env=None,
+            watch_timeout_sec=20,
+            opencode_workspace="/tmp/demo-workspace",
+            opencode_session_id="ses_demo",
+            message_id=None,
+            recent_index=2,
+            latest=False,
+            history_message_limit=6,
+        )
+        fake_client = mock.Mock()
+        fake_client.get_session.return_value = {
+            "id": "ses_demo",
+            "directory": "/tmp/demo-workspace",
+            "title": "Demo task",
+        }
+        fake_client.session_messages.return_value = [
+            {
+                "info": {"role": "user", "time": {"created": 1772903315000}, "id": "msg_user"},
+                "parts": [{"type": "text", "text": "Please patch notes.py and show the last pytest lines."}],
+            },
+            {
+                "info": {"role": "assistant", "time": {"created": 1772903315600, "completed": 1772903315610}, "id": "msg_read"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "read",
+                        "input": {"filePath": "/mnt/vault/test-opencode-skill/app/notes.py"},
+                        "state": {"status": "completed", "output": "def old_func():\n    return 1\n"},
+                    }
+                ],
+            },
+            {
+                "info": {"role": "assistant", "time": {"created": 1772903315700, "completed": 1772903315710}, "id": "msg_edit"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "edit",
+                        "input": {
+                            "path": "/mnt/vault/test-opencode-skill/app/notes.py",
+                            "oldText": "return 1",
+                            "newText": "return 2",
+                        },
+                        "state": {"status": "completed", "output": "patched app/notes.py"},
+                    }
+                ],
+            },
+            {
+                "info": {"role": "assistant", "time": {"created": 1772903315800, "completed": 1772903315810}, "id": "msg_bash"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "input": {"command": "cd /mnt/vault/test-opencode-skill && pytest -q"},
+                        "state": {
+                            "status": "completed",
+                            "output": "== pytest ==\n1 failed, 10 passed\nnotes.py::test_edit PASSED\nAll done",
+                        },
+                    }
+                ],
+            },
+            {
+                "info": {"role": "assistant", "time": {"created": 1772903315900, "completed": 1772903315910}, "id": "msg_text"},
+                "parts": [{"type": "text", "text": "Patched notes.py and reran pytest. The final lines show the suite is green."}],
+            },
+        ]
+
+        with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+            "opencode_manager.locked_registry"
+        ) as locked_registry, mock.patch("opencode_manager.refresh_registry_entries"):
+            locked_registry.return_value.__enter__.return_value = ({"watchers": []}, Path(args.registry_path))
+            locked_registry.return_value.__exit__.return_value = None
+            result = inspect_history_command(args)
+
+        history = result["history"]
+        self.assertEqual(history["selection"]["messageId"], "msg_edit")
+        self.assertEqual(history["selection"]["recentIndex"], 2)
+        self.assertEqual(history["recentAnchors"][0]["recentIndex"], 0)
+        tool_call = history["message"]["toolCalls"][0]
+        self.assertEqual(tool_call["action"], "patch")
+        self.assertEqual(tool_call["patchTargets"], ["/mnt/vault/test-opencode-skill/app/notes.py"])
+        self.assertEqual(tool_call["newText"], "return 2")
+        self.assertEqual(tool_call["newTextPreview"], "return 2")
+
+    def test_inspect_history_command_can_select_message_id_and_tail_shell_output(self):
+        args = Namespace(
+            registry_path="/tmp/opencode-history-registry.json",
+            opencode_base_url="http://127.0.0.1:4096",
+            opencode_token=None,
+            opencode_token_env=None,
+            watch_timeout_sec=20,
+            opencode_workspace="/tmp/demo-workspace",
+            opencode_session_id="ses_demo",
+            message_id="msg_bash",
+            recent_index=None,
+            latest=False,
+            history_message_limit=6,
+        )
+        fake_client = mock.Mock()
+        fake_client.get_session.return_value = {
+            "id": "ses_demo",
+            "directory": "/tmp/demo-workspace",
+            "title": "Demo task",
+        }
+        fake_client.session_messages.return_value = [
+            {"info": {"role": "user", "time": {"created": 1772903315000}, "id": "msg_user"}, "parts": [{"type": "text", "text": "run pytest"}]},
+            {
+                "info": {"role": "assistant", "time": {"created": 1772903315800, "completed": 1772903315810}, "id": "msg_bash"},
+                "parts": [
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "input": {"command": "cd /mnt/vault/test-opencode-skill && pytest -q"},
+                        "state": {
+                            "status": "completed",
+                            "output": "PWD=/mnt/vault/test-opencode-skill\ncollecting tests\nnotes.py::test_edit PASSED\nAll done",
+                        },
+                    }
+                ],
+            },
+        ]
+
+        with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+            "opencode_manager.locked_registry"
+        ) as locked_registry, mock.patch("opencode_manager.refresh_registry_entries"):
+            locked_registry.return_value.__enter__.return_value = ({"watchers": []}, Path(args.registry_path))
+            locked_registry.return_value.__exit__.return_value = None
+            result = inspect_history_command(args)
+
+        history = result["history"]
+        self.assertEqual(history["selection"]["messageId"], "msg_bash")
+        self.assertEqual(history["message"]["recentIndex"], 0)
+        tool_call = history["message"]["toolCalls"][0]
+        self.assertEqual(tool_call["action"], "shell")
+        self.assertIn("pytest -q", tool_call["commandPreview"])
+        self.assertEqual(tool_call["outputTailLines"][-1], "All done")
+        self.assertIn("notes.py::test_edit PASSED", tool_call["outputTailLines"])
+
     def test_attach_command_returns_immediate_inspection_for_takeover(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -777,6 +920,26 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--follow-up-prompt", continue_help)
         self.assertIn("--ensure-watcher", continue_help)
 
+        parsed_history = parser.parse_args(
+            [
+                "inspect-history",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+                "--recent-index",
+                "1",
+            ]
+        )
+        self.assertEqual(parsed_history.command, "inspect-history")
+        self.assertEqual(parsed_history.opencode_session_id, "ses_demo")
+        self.assertEqual(parsed_history.recent_index, 1)
+
+        history_help = subparser_action.choices["inspect-history"].format_help()
+        self.assertIn("--message-id", history_help)
+        self.assertIn("--recent-index", history_help)
+        self.assertIn("--history-message-limit", history_help)
+
         parsed_stop = parser.parse_args(["stop-watcher", "--watcher-id", "ow_demo123"])
         self.assertEqual(parsed_stop.command, "stop-watcher")
         self.assertEqual(parsed_stop.watcher_id, "ow_demo123")
@@ -799,6 +962,7 @@ class OpenCodeManagerTests(unittest.TestCase):
         readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
         self.assertIn("--follow-up-prompt", readme)
         self.assertIn("--ensure-watcher", readme)
+        self.assertIn("inspect-history", readme)
         self.assertIn("progressSource", readme)
         self.assertIn("agentShouldPoll", readme)
         self.assertIn("turnShouldEnd", readme)
@@ -807,6 +971,7 @@ class OpenCodeManagerTests(unittest.TestCase):
 
     def test_skill_mentions_manager_handoff_contract(self):
         skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
+        self.assertIn("inspect-history", skill)
         self.assertIn("progressSource", skill)
         self.assertIn("agentShouldPoll", skill)
         self.assertIn("turnShouldEnd", skill)

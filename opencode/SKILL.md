@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage; use `scripts/opencodectl.py turn/watch/...` only for runtime wiring or debugging. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user.
+description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, drill into one recent message when needed, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage; use `scripts/opencodectl.py turn/watch/...` only for runtime wiring or debugging. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user.
 ---
 
 # Opencode
@@ -36,6 +36,7 @@ Normal usage commands:
 - `continue`
 - `list-sessions`
 - `inspect`
+- `inspect-history`
 - `list-watchers`
 - `stop-watcher`
 - `detach`
@@ -48,6 +49,7 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 - Fresh work in a workspace -> `start`
 - Need to find an existing session first -> `list-sessions`
 - Need current state of one existing session -> `inspect` (now returns a compact `rehydration` block for takeover/current-state rebuild)
+- Need more detail on one recent message/event after inspect/attach -> `inspect-history` (`--recent-index 0` = latest, or use `--message-id`)
 - Need to send more work into an existing session -> `continue`
 - Need watcher routing back to this OpenClaw session -> `attach` or `continue --ensure-watcher` (`attach` now also returns the same immediate inspection/rehydration payload)
 - Need to see watcher bindings -> `list-watchers`
