@@ -35,10 +35,9 @@ CORE_CHECK_NAMES = (
     "minimal_runtime_handoff_shape",
     "inspect_current_state",
     "session_completed_terminal",
-    "workspace_start_artifact_content",
-    "workspace_continue_artifact_content",
+    "latest_completed_assistant_turn",
+    "workspace_final_file_content",
     "attach_rehydration",
-    "inspect_history",
 )
 
 
@@ -79,6 +78,12 @@ def ensure_directory(path: Path) -> Path:
 def save_json_file(path: Path, payload: Any) -> None:
     ensure_directory(path.parent)
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+
+
+def save_text_file(path: Path, content: str) -> None:
+    ensure_directory(path.parent)
+    path.write_text(content, encoding="utf-8")
 
 
 
@@ -550,12 +555,17 @@ def inspection_latest_message(inspection_result: dict[str, Any]) -> dict[str, An
 
 
 def validation_relative_root(run_id: str) -> str:
-    return str(Path("validation-harness") / run_id)
+    return str(Path(".claw-validation"))
 
 
 
 def validation_relative_path(run_id: str, name: str) -> str:
     return str(Path(validation_relative_root(run_id)) / name)
+
+
+
+def validation_output_path(run_id: str) -> str:
+    return validation_relative_path(run_id, f"{run_id}.txt")
 
 
 
@@ -569,13 +579,8 @@ def expected_continue_text(run_id: str) -> str:
 
 
 
-def expected_start_artifact_payload(run_id: str) -> dict[str, Any]:
-    return {"runId": run_id, "step": "start"}
-
-
-
-def expected_continue_artifact_payload(run_id: str) -> dict[str, Any]:
-    return {"runId": run_id, "step": "start", "continueSeen": True}
+def expected_final_output(run_id: str) -> str:
+    return f"{expected_start_text(run_id)}\n{expected_continue_text(run_id)}"
 
 
 
@@ -694,29 +699,23 @@ def build_verdict(checks: list[dict[str, Any]], *, preflight_ok: bool, has_error
 
 
 def build_start_prompt(run_id: str) -> str:
-    root = validation_relative_root(run_id)
-    start_path = validation_relative_path(run_id, "start.txt")
-    artifact_path = validation_relative_path(run_id, "artifact.json")
-    artifact_payload = json.dumps(expected_start_artifact_payload(run_id), ensure_ascii=False)
+    output_path = validation_output_path(run_id)
     return (
         "Live validation only. Work only inside the current workspace. "
-        f"Create directory {root} if needed. "
-        f"Write {start_path} with exactly: {expected_start_text(run_id)} "
-        f"Write {artifact_path} with JSON exactly equal to: {artifact_payload} "
+        f"Using shell commands, create directory {validation_relative_root(run_id)} if needed. "
+        f"Then write {output_path} with exactly one line: {expected_start_text(run_id)} "
+        f"Then sleep 8 seconds and print the full contents of {output_path}. "
         "Finish with one short status line."
     )
 
 
 
 def build_continue_prompt(run_id: str) -> str:
-    root = validation_relative_root(run_id)
-    continue_path = validation_relative_path(run_id, "continue.txt")
-    artifact_path = validation_relative_path(run_id, "artifact.json")
-    artifact_payload = json.dumps(expected_continue_artifact_payload(run_id), ensure_ascii=False)
+    output_path = validation_output_path(run_id)
     return (
         "Continue the same live validation. "
-        f"In {root}, write continue.txt with exactly: {expected_continue_text(run_id)} "
-        f"Replace {artifact_path} so its parsed JSON object is exactly: {artifact_payload} "
+        f"Using shell commands only, append one second line to {output_path}: {expected_continue_text(run_id)} "
+        f"Then sleep 8 seconds and print the full contents of {output_path}. "
         "Finish with one short status line."
     )
 
@@ -821,94 +820,24 @@ def scan_recent_history_messages(
 
 
 
-def normalize_tool_targets(tool_call: dict[str, Any]) -> list[str]:
-    targets: list[str] = []
-    for key in ("writeTargets", "patchTargets", "targets"):
-        value = tool_call.get(key)
-        if isinstance(value, list):
-            for item in value:
-                if isinstance(item, str) and item not in targets:
-                    targets.append(item)
-    return targets
-
-
-
-def extract_patch_added_text(patch_text: str) -> str | None:
-    added_lines: list[str] = []
-    for line in patch_text.splitlines():
-        if line.startswith(("+++", "---", "@@")):
-            continue
-        if line.startswith("+"):
-            added_lines.append(line[1:])
-    if not added_lines:
-        return None
-    return "\n".join(added_lines)
-
-
-
-def iter_tool_call_text_candidates(tool_call: dict[str, Any]):
+def iter_tool_call_output_candidates(tool_call: dict[str, Any]):
     seen: set[tuple[str, str]] = set()
-    for key in ("content", "newText", "patch"):
+    for key in ("content", "outputPreview", "commandPreview"):
         value = tool_call.get(key)
         if isinstance(value, str) and value:
             token = (key, value)
             if token not in seen:
                 seen.add(token)
                 yield key, value
-            if key == "patch":
-                patch_added = extract_patch_added_text(value)
-                if patch_added:
-                    patch_token = ("patchAddedText", patch_added)
-                    if patch_token not in seen:
-                        seen.add(patch_token)
-                        yield "patchAddedText", patch_added
-
-
-
-def find_message_text_artifact(message: dict[str, Any], *, target_path: str, expected_text: str) -> dict[str, Any]:
-    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
-    for tool_call in tool_calls:
-        if not isinstance(tool_call, dict):
-            continue
-        if target_path not in normalize_tool_targets(tool_call):
-            continue
-        for source, candidate in iter_tool_call_text_candidates(tool_call):
-            normalized = candidate.rstrip("\n")
-            if normalized == expected_text:
-                return {
-                    "matched": True,
-                    "targetPath": target_path,
-                    "toolName": tool_call.get("toolName"),
-                    "action": tool_call.get("action"),
-                    "contentSource": source,
-                    "contentPreview": tool_call.get("contentPreview") or tool_call.get("newTextPreview") or tool_call.get("patchPreview"),
-                }
-    return {"matched": False, "targetPath": target_path, "expectedText": expected_text}
-
-
-
-def find_message_json_artifact(message: dict[str, Any], *, target_path: str, expected_payload: dict[str, Any]) -> dict[str, Any]:
-    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
-    for tool_call in tool_calls:
-        if not isinstance(tool_call, dict):
-            continue
-        if target_path not in normalize_tool_targets(tool_call):
-            continue
-        for source, candidate in iter_tool_call_text_candidates(tool_call):
-            try:
-                parsed = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if parsed == expected_payload:
-                return {
-                    "matched": True,
-                    "targetPath": target_path,
-                    "toolName": tool_call.get("toolName"),
-                    "action": tool_call.get("action"),
-                    "contentSource": source,
-                    "parsed": parsed,
-                }
-    return {"matched": False, "targetPath": target_path, "expectedPayload": expected_payload}
+    output_tail_lines = tool_call.get("outputTailLines")
+    if isinstance(output_tail_lines, list):
+        lines = [str(line) for line in output_tail_lines if isinstance(line, str) and line]
+        if lines:
+            joined = "\n".join(lines)
+            token = ("outputTailLines", joined)
+            if token not in seen:
+                seen.add(token)
+                yield "outputTailLines", joined
 
 
 
@@ -921,6 +850,52 @@ def message_completed(message: dict[str, Any]) -> bool:
 
 
 
+def recent_index_value(message: dict[str, Any]) -> int:
+    return int(message.get("recentIndex") or 0)
+
+
+
+def find_latest_completed_assistant_turn(history_messages: list[dict[str, Any]]) -> dict[str, Any] | None:
+    assistant_messages = [
+        message
+        for message in history_messages
+        if isinstance(message, dict)
+        and str(message.get("role") or "").strip().lower() == "assistant"
+        and str(message.get("status") or "").strip().lower() == "completed"
+    ]
+    if not assistant_messages:
+        return None
+    assistant_messages.sort(key=recent_index_value)
+    return assistant_messages[0]
+
+
+
+def contains_expected_output(candidate: str, expected_output: str) -> bool:
+    normalized = candidate.replace("\r\n", "\n").replace("\r", "\n")
+    expected_lines = expected_output.splitlines()
+    return all(line in normalized for line in expected_lines) and normalized.find(expected_lines[0]) <= normalized.rfind(expected_lines[-1])
+
+
+
+def find_final_output_in_message(message: dict[str, Any], *, expected_output: str) -> dict[str, Any]:
+    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        for source, candidate in iter_tool_call_output_candidates(tool_call):
+            if contains_expected_output(candidate, expected_output):
+                return {
+                    "matched": True,
+                    "toolName": tool_call.get("toolName"),
+                    "action": tool_call.get("action"),
+                    "contentSource": source,
+                    "commandPreview": tool_call.get("commandPreview"),
+                    "outputTailLines": tool_call.get("outputTailLines"),
+                }
+    return {"matched": False, "expectedOutput": expected_output}
+
+
+
 def evaluate_workspace_business_completion(run_id: str, history_messages: list[dict[str, Any]]) -> dict[str, Any]:
     assistant_messages = [
         message
@@ -929,54 +904,30 @@ def evaluate_workspace_business_completion(run_id: str, history_messages: list[d
         and str(message.get("role") or "").strip().lower() == "assistant"
         and str(message.get("status") or "").strip().lower() == "completed"
     ]
-    assistant_messages.sort(key=lambda item: int(item.get("recentIndex") or 0), reverse=True)
-    start_message = assistant_messages[0] if len(assistant_messages) >= 2 else None
-    continue_message = assistant_messages[-1] if len(assistant_messages) >= 2 else None
-
-    start_text = find_message_text_artifact(
-        start_message or {},
-        target_path=validation_relative_path(run_id, "start.txt"),
-        expected_text=expected_start_text(run_id),
-    )
-    start_json = find_message_json_artifact(
-        start_message or {},
-        target_path=validation_relative_path(run_id, "artifact.json"),
-        expected_payload=expected_start_artifact_payload(run_id),
-    )
-    continue_text = find_message_text_artifact(
-        continue_message or {},
-        target_path=validation_relative_path(run_id, "continue.txt"),
-        expected_text=expected_continue_text(run_id),
-    )
-    continue_json = find_message_json_artifact(
-        continue_message or {},
-        target_path=validation_relative_path(run_id, "artifact.json"),
-        expected_payload=expected_continue_artifact_payload(run_id),
-    )
-
-    start_result = {
-        "message": summarize_history_message(start_message or {}),
-        "messageCompleted": message_completed(start_message or {}),
-        "startText": start_text,
-        "artifactJson": start_json,
+    assistant_messages.sort(key=recent_index_value)
+    latest_completed_message = assistant_messages[0] if assistant_messages else None
+    latest_completed_result = {
+        "message": summarize_history_message(latest_completed_message or {}),
+        "messageCompleted": message_completed(latest_completed_message or {}),
     }
-    start_result["passed"] = bool(start_result["messageCompleted"] and start_text.get("matched") and start_json.get("matched"))
+    latest_completed_result["passed"] = bool(latest_completed_result["messageCompleted"])
 
-    continue_result = {
-        "message": summarize_history_message(continue_message or {}),
-        "messageCompleted": message_completed(continue_message or {}),
-        "continueText": continue_text,
-        "artifactJson": continue_json,
-    }
-    continue_result["passed"] = bool(
-        continue_result["messageCompleted"] and continue_text.get("matched") and continue_json.get("matched")
+    final_output = find_final_output_in_message(
+        latest_completed_message or {},
+        expected_output=expected_final_output(run_id),
     )
+    final_output_result = {
+        "message": summarize_history_message(latest_completed_message or {}),
+        "expectedOutput": expected_final_output(run_id),
+        "match": final_output,
+    }
+    final_output_result["passed"] = bool(latest_completed_result["messageCompleted"] and final_output.get("matched"))
 
     return {
         "assistantTurnCount": len(assistant_messages),
         "assistantMessages": [summarize_history_message(message) for message in assistant_messages],
-        "start": start_result,
-        "continue": continue_result,
+        "latestCompletedAssistantTurn": latest_completed_result,
+        "finalFileContent": final_output_result,
     }
 
 
@@ -1380,10 +1331,12 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         latest_history_message = history_messages[0] if history_messages else {}
         latest_tool_calls = latest_history_message.get("toolCalls") if isinstance(latest_history_message.get("toolCalls"), list) else []
         business_completion = evaluate_workspace_business_completion(run_id, history_messages)
+        latest_completed_turn = business_completion.get("latestCompletedAssistantTurn") or {}
+        final_file_content = business_completion.get("finalFileContent") or {}
         checks.append(
             bool_check(
                 "inspect_history",
-                bool(latest_history_message.get("messageId")) and business_completion.get("assistantTurnCount", 0) >= 2,
+                bool(latest_history_message.get("messageId")) and bool(latest_completed_turn.get("passed")),
                 details={
                     "messageId": latest_history_message.get("messageId"),
                     "recentIndex": latest_history_message.get("recentIndex"),
@@ -1395,16 +1348,16 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         )
         checks.append(
             bool_check(
-                "workspace_start_artifact_content",
-                bool((business_completion.get("start") or {}).get("passed")),
-                details=business_completion.get("start") or {},
+                "latest_completed_assistant_turn",
+                bool(latest_completed_turn.get("passed")),
+                details=latest_completed_turn,
             )
         )
         checks.append(
             bool_check(
-                "workspace_continue_artifact_content",
-                bool((business_completion.get("continue") or {}).get("passed")),
-                details=business_completion.get("continue") or {},
+                "workspace_final_file_content",
+                bool(final_file_content.get("passed")),
+                details=final_file_content,
             )
         )
         scenario["historyScan"] = {
