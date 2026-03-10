@@ -128,8 +128,8 @@ def task_cluster_strength(task_cluster: Any) -> tuple[int, int, int]:
     normalized = normalize_task_cluster(task_cluster)
     return (
         normalized.get("clusterStateRank") or 0,
-        normalized.get("sourceUpdateMs") or 0,
         normalized.get("detailRank") or 0,
+        normalized.get("sourceUpdateMs") or 0,
     )
 
 

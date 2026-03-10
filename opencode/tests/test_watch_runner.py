@@ -161,6 +161,31 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertTrue(action["supersededSuppressed"])
         self.assertEqual(action["reason"], "superseded_task_cluster_update")
 
+    def test_earlier_richer_completion_suppresses_later_weaker_completion(self):
+        earlier_richer_completion = self.task_cluster(
+            preview="Step 1 completed and Step 2 completed.",
+        )
+        earlier_richer_completion["clusterStateRank"] = 40
+        earlier_richer_completion["sourceUpdateMs"] = 100
+        earlier_richer_completion["detailRank"] = len("Step 1 completed and Step 2 completed.")
+
+        later_weaker_completion = self.task_cluster(preview="Step 2 completed.")
+        later_weaker_completion["clusterStateRank"] = 40
+        later_weaker_completion["sourceUpdateMs"] = 200
+        later_weaker_completion["detailRank"] = len("Step 2 completed.")
+
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {"clusterHeads": {earlier_richer_completion["key"]: earlier_richer_completion}},
+            live=True,
+            task_cluster=later_weaker_completion,
+        )
+
+        self.assertEqual(action["operation"], "skip_superseded")
+        self.assertFalse(action["shouldExecute"])
+        self.assertTrue(action["supersededSuppressed"])
+        self.assertEqual(action["reason"], "superseded_task_cluster_update")
+
     def test_genuinely_new_useful_cluster_update_stays_visible(self):
         earlier_progress = self.task_cluster(preview="Step 1 completed.")
         earlier_progress["clusterStateRank"] = 20
