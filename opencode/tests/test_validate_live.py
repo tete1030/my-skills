@@ -155,6 +155,170 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
 
         self.assertEqual(verdict, "partly_ready")
 
+    def test_evaluate_workspace_business_completion_validates_start_and_continue_outputs(self):
+        run_id = "vtest-123"
+        history_messages = [
+            {
+                "messageId": "msg_continue",
+                "recentIndex": 0,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:00:05Z",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "continue.txt")],
+                        "content": validate_live.expected_continue_text(run_id),
+                    },
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "content": json.dumps(validate_live.expected_continue_artifact_payload(run_id)),
+                    },
+                ],
+            },
+            {
+                "messageId": "msg_start",
+                "recentIndex": 2,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:00:01Z",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "start.txt")],
+                        "content": validate_live.expected_start_text(run_id),
+                    },
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "content": json.dumps(validate_live.expected_start_artifact_payload(run_id)),
+                    },
+                ],
+            },
+        ]
+
+        result = validate_live.evaluate_workspace_business_completion(run_id, history_messages)
+
+        self.assertEqual(result["assistantTurnCount"], 2)
+        self.assertTrue(result["start"]["passed"])
+        self.assertTrue(result["continue"]["passed"])
+
+    def test_evaluate_workspace_business_completion_accepts_patch_added_text(self):
+        run_id = "vtest-patch"
+        start_payload = json.dumps(validate_live.expected_start_artifact_payload(run_id), indent=2)
+        continue_payload = json.dumps(validate_live.expected_continue_artifact_payload(run_id), indent=2)
+        history_messages = [
+            {
+                "messageId": "msg_continue",
+                "recentIndex": 0,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:10:05Z",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "apply_patch",
+                        "action": "patch",
+                        "patchTargets": [validate_live.validation_relative_path(run_id, "continue.txt")],
+                        "patch": "@@\n+%s\n" % validate_live.expected_continue_text(run_id),
+                    },
+                    {
+                        "toolName": "apply_patch",
+                        "action": "patch",
+                        "patchTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "patch": "@@\n" + "\n".join(f"+{line}" for line in continue_payload.splitlines()) + "\n",
+                    },
+                ],
+            },
+            {
+                "messageId": "msg_start",
+                "recentIndex": 2,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:10:01Z",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "start.txt")],
+                        "content": validate_live.expected_start_text(run_id),
+                    },
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "content": start_payload,
+                    },
+                ],
+            },
+        ]
+
+        result = validate_live.evaluate_workspace_business_completion(run_id, history_messages)
+
+        self.assertTrue(result["start"]["passed"])
+        self.assertTrue(result["continue"]["passed"])
+
+    def test_evaluate_workspace_business_completion_requires_completed_assistant_turns(self):
+        run_id = "vtest-fail"
+        history_messages = [
+            {
+                "messageId": "msg_continue",
+                "recentIndex": 0,
+                "role": "assistant",
+                "status": "running",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "continue.txt")],
+                        "content": validate_live.expected_continue_text(run_id),
+                    },
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "content": json.dumps({"runId": run_id, "step": "start"}),
+                    },
+                ],
+            },
+            {
+                "messageId": "msg_start",
+                "recentIndex": 2,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:20:01Z",
+                "toolCallCount": 2,
+                "toolCalls": [
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "start.txt")],
+                        "content": validate_live.expected_start_text(run_id),
+                    },
+                    {
+                        "toolName": "write",
+                        "action": "write",
+                        "writeTargets": [validate_live.validation_relative_path(run_id, "artifact.json")],
+                        "content": json.dumps(validate_live.expected_start_artifact_payload(run_id)),
+                    },
+                ],
+            },
+        ]
+
+        result = validate_live.evaluate_workspace_business_completion(run_id, history_messages)
+
+        self.assertTrue(result["start"]["passed"])
+        self.assertFalse(result["continue"]["passed"])
+
 
 if __name__ == "__main__":
     unittest.main()

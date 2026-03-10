@@ -34,6 +34,9 @@ CORE_CHECK_NAMES = (
     "live_handoff_executed",
     "minimal_runtime_handoff_shape",
     "inspect_current_state",
+    "session_completed_terminal",
+    "workspace_start_artifact_content",
+    "workspace_continue_artifact_content",
     "attach_rehydration",
     "inspect_history",
 )
@@ -539,7 +542,43 @@ def inspection_current_state(inspection_result: dict[str, Any]) -> dict[str, Any
 
 
 
-def wait_for_inspection(
+def inspection_latest_message(inspection_result: dict[str, Any]) -> dict[str, Any]:
+    latest_message = inspection_result.get("latestMessage") if isinstance(inspection_result.get("latestMessage"), dict) else {}
+    return latest_message
+
+
+
+def validation_relative_root(run_id: str) -> str:
+    return str(Path("validation-harness") / run_id)
+
+
+
+def validation_relative_path(run_id: str, name: str) -> str:
+    return str(Path(validation_relative_root(run_id)) / name)
+
+
+
+def expected_start_text(run_id: str) -> str:
+    return f"start ok {run_id}."
+
+
+
+def expected_continue_text(run_id: str) -> str:
+    return f"continue ok {run_id}."
+
+
+
+def expected_start_artifact_payload(run_id: str) -> dict[str, Any]:
+    return {"runId": run_id, "step": "start"}
+
+
+
+def expected_continue_artifact_payload(run_id: str) -> dict[str, Any]:
+    return {"runId": run_id, "step": "start", "continueSeen": True}
+
+
+
+def wait_for_terminal_inspection(
     config: dict[str, Any],
     *,
     registry_path: Path,
@@ -547,13 +586,17 @@ def wait_for_inspection(
     cwd: Path,
     session_id: str,
     workspace: str,
-    retry_sec: int,
-    attempts: int,
+    timeout_sec: int,
+    poll_interval_sec: float,
+    label_prefix: str,
 ) -> dict[str, Any]:
+    deadline = time.monotonic() + timeout_sec
     last_result: dict[str, Any] | None = None
-    for attempt in range(1, attempts + 1):
+    attempt = 0
+    while time.monotonic() <= deadline:
+        attempt += 1
         result = run_json_command(
-            f"03-inspect-{attempt:02d}",
+            f"{label_prefix}-{attempt:02d}",
             build_manager_argv(
                 config,
                 registry_path=registry_path,
@@ -574,14 +617,12 @@ def wait_for_inspection(
         )
         last_result = result.data
         current_state = inspection_current_state(result.data)
-        status = current_state.get("status")
-        preview = current_state.get("latestMeaningfulPreview")
-        if status and (preview or status in TERMINAL_STATUSES):
+        status = str(current_state.get("status") or "").strip().lower()
+        if status in TERMINAL_STATUSES:
             return result.data
-        if attempt < attempts:
-            time.sleep(retry_sec)
+        time.sleep(poll_interval_sec)
 
-    raise ValidationError(f"inspect never produced a usable currentState after {attempts} attempts: {last_result}")
+    raise ValidationError(f"inspect never reached a terminal status within {timeout_sec}s: {last_result}")
 
 
 
@@ -652,23 +693,288 @@ def build_verdict(checks: list[dict[str, Any]], *, preflight_ok: bool, has_error
 
 
 def build_start_prompt(run_id: str) -> str:
+    root = validation_relative_root(run_id)
+    start_path = validation_relative_path(run_id, "start.txt")
+    artifact_path = validation_relative_path(run_id, "artifact.json")
+    artifact_payload = json.dumps(expected_start_artifact_payload(run_id), ensure_ascii=False)
     return (
         "Live validation only. Work only inside the current workspace. "
-        f"Create directory validation-harness/{run_id} if needed. "
-        f"Write validation-harness/{run_id}/start.txt with exactly: start ok {run_id}. "
-        f"Write validation-harness/{run_id}/artifact.json with a JSON object containing runId={run_id!r} and step='start'. "
+        f"Create directory {root} if needed. "
+        f"Write {start_path} with exactly: {expected_start_text(run_id)} "
+        f"Write {artifact_path} with JSON exactly equal to: {artifact_payload} "
         "Finish with one short status line."
     )
 
 
 
 def build_continue_prompt(run_id: str) -> str:
+    root = validation_relative_root(run_id)
+    continue_path = validation_relative_path(run_id, "continue.txt")
+    artifact_path = validation_relative_path(run_id, "artifact.json")
+    artifact_payload = json.dumps(expected_continue_artifact_payload(run_id), ensure_ascii=False)
     return (
         "Continue the same live validation. "
-        f"In validation-harness/{run_id}, write continue.txt with exactly: continue ok {run_id}. "
-        f"Update artifact.json so it also records continueSeen=true for runId={run_id!r}. "
+        f"In {root}, write continue.txt with exactly: {expected_continue_text(run_id)} "
+        f"Replace {artifact_path} so its parsed JSON object is exactly: {artifact_payload} "
         "Finish with one short status line."
     )
+
+
+
+def summarize_history_message(message: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "messageId": message.get("messageId"),
+            "recentIndex": message.get("recentIndex"),
+            "role": message.get("role"),
+            "status": message.get("status"),
+            "completedAt": message.get("completedAt"),
+            "textPreview": message.get("textPreview"),
+            "toolCallCount": message.get("toolCallCount"),
+        }.items()
+        if value is not None
+    }
+
+
+
+def scan_recent_history_messages(
+    config: dict[str, Any],
+    *,
+    registry_path: Path,
+    artifact_dir: Path,
+    cwd: Path,
+    session_id: str,
+    workspace: str,
+    max_messages: int = 6,
+) -> dict[str, Any]:
+    messages: list[dict[str, Any]] = []
+    scanned_indices: list[int] = []
+    message_count_in_window = 0
+    scan_limit = 0
+
+    latest_result = run_json_command(
+        "06-history-scan-00",
+        build_manager_argv(
+            config,
+            registry_path=registry_path,
+            command="inspect-history",
+            extra_args=[
+                "--opencode-session-id",
+                session_id,
+                "--opencode-workspace",
+                workspace,
+                "--history-message-limit",
+                str(config["historyMessageLimit"]),
+                "--watch-timeout-sec",
+                str(config["watchTimeoutSec"]),
+                "--recent-index",
+                "0",
+            ],
+        ),
+        artifact_dir=artifact_dir,
+        cwd=cwd,
+    )
+    latest_history = latest_result.data.get("history") if isinstance(latest_result.data.get("history"), dict) else {}
+    latest_message = latest_history.get("message") if isinstance(latest_history.get("message"), dict) else {}
+    messages.append(latest_message)
+    scanned_indices.append(0)
+    selection = latest_history.get("selection") if isinstance(latest_history.get("selection"), dict) else {}
+    message_count_in_window = int(selection.get("messageCountInWindow") or len(messages))
+    scan_limit = min(max_messages, message_count_in_window)
+
+    for recent_index in range(1, scan_limit):
+        result = run_json_command(
+            f"06-history-scan-{recent_index:02d}",
+            build_manager_argv(
+                config,
+                registry_path=registry_path,
+                command="inspect-history",
+                extra_args=[
+                    "--opencode-session-id",
+                    session_id,
+                    "--opencode-workspace",
+                    workspace,
+                    "--history-message-limit",
+                    str(config["historyMessageLimit"]),
+                    "--watch-timeout-sec",
+                    str(config["watchTimeoutSec"]),
+                    "--recent-index",
+                    str(recent_index),
+                ],
+            ),
+            artifact_dir=artifact_dir,
+            cwd=cwd,
+        )
+        history = result.data.get("history") if isinstance(result.data.get("history"), dict) else {}
+        message = history.get("message") if isinstance(history.get("message"), dict) else {}
+        messages.append(message)
+        scanned_indices.append(recent_index)
+
+    return {
+        "messages": messages,
+        "scannedIndices": scanned_indices,
+        "messageCountInWindow": message_count_in_window,
+        "scanLimit": scan_limit,
+    }
+
+
+
+def normalize_tool_targets(tool_call: dict[str, Any]) -> list[str]:
+    targets: list[str] = []
+    for key in ("writeTargets", "patchTargets", "targets"):
+        value = tool_call.get(key)
+        if isinstance(value, list):
+            for item in value:
+                if isinstance(item, str) and item not in targets:
+                    targets.append(item)
+    return targets
+
+
+
+def extract_patch_added_text(patch_text: str) -> str | None:
+    added_lines: list[str] = []
+    for line in patch_text.splitlines():
+        if line.startswith(("+++", "---", "@@")):
+            continue
+        if line.startswith("+"):
+            added_lines.append(line[1:])
+    if not added_lines:
+        return None
+    return "\n".join(added_lines)
+
+
+
+def iter_tool_call_text_candidates(tool_call: dict[str, Any]):
+    seen: set[tuple[str, str]] = set()
+    for key in ("content", "newText", "patch"):
+        value = tool_call.get(key)
+        if isinstance(value, str) and value:
+            token = (key, value)
+            if token not in seen:
+                seen.add(token)
+                yield key, value
+            if key == "patch":
+                patch_added = extract_patch_added_text(value)
+                if patch_added:
+                    patch_token = ("patchAddedText", patch_added)
+                    if patch_token not in seen:
+                        seen.add(patch_token)
+                        yield "patchAddedText", patch_added
+
+
+
+def find_message_text_artifact(message: dict[str, Any], *, target_path: str, expected_text: str) -> dict[str, Any]:
+    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        if target_path not in normalize_tool_targets(tool_call):
+            continue
+        for source, candidate in iter_tool_call_text_candidates(tool_call):
+            normalized = candidate.rstrip("\n")
+            if normalized == expected_text:
+                return {
+                    "matched": True,
+                    "targetPath": target_path,
+                    "toolName": tool_call.get("toolName"),
+                    "action": tool_call.get("action"),
+                    "contentSource": source,
+                    "contentPreview": tool_call.get("contentPreview") or tool_call.get("newTextPreview") or tool_call.get("patchPreview"),
+                }
+    return {"matched": False, "targetPath": target_path, "expectedText": expected_text}
+
+
+
+def find_message_json_artifact(message: dict[str, Any], *, target_path: str, expected_payload: dict[str, Any]) -> dict[str, Any]:
+    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
+    for tool_call in tool_calls:
+        if not isinstance(tool_call, dict):
+            continue
+        if target_path not in normalize_tool_targets(tool_call):
+            continue
+        for source, candidate in iter_tool_call_text_candidates(tool_call):
+            try:
+                parsed = json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+            if parsed == expected_payload:
+                return {
+                    "matched": True,
+                    "targetPath": target_path,
+                    "toolName": tool_call.get("toolName"),
+                    "action": tool_call.get("action"),
+                    "contentSource": source,
+                    "parsed": parsed,
+                }
+    return {"matched": False, "targetPath": target_path, "expectedPayload": expected_payload}
+
+
+
+def message_completed(message: dict[str, Any]) -> bool:
+    return (
+        str(message.get("role") or "").strip().lower() == "assistant"
+        and str(message.get("status") or "").strip().lower() == "completed"
+        and bool(message.get("completedAt"))
+    )
+
+
+
+def evaluate_workspace_business_completion(run_id: str, history_messages: list[dict[str, Any]]) -> dict[str, Any]:
+    assistant_messages = [
+        message
+        for message in history_messages
+        if isinstance(message, dict) and str(message.get("role") or "").strip().lower() == "assistant"
+    ]
+    assistant_messages.sort(key=lambda item: int(item.get("recentIndex") or 0), reverse=True)
+    start_message = assistant_messages[0] if len(assistant_messages) >= 2 else None
+    continue_message = assistant_messages[-1] if len(assistant_messages) >= 2 else None
+
+    start_text = find_message_text_artifact(
+        start_message or {},
+        target_path=validation_relative_path(run_id, "start.txt"),
+        expected_text=expected_start_text(run_id),
+    )
+    start_json = find_message_json_artifact(
+        start_message or {},
+        target_path=validation_relative_path(run_id, "artifact.json"),
+        expected_payload=expected_start_artifact_payload(run_id),
+    )
+    continue_text = find_message_text_artifact(
+        continue_message or {},
+        target_path=validation_relative_path(run_id, "continue.txt"),
+        expected_text=expected_continue_text(run_id),
+    )
+    continue_json = find_message_json_artifact(
+        continue_message or {},
+        target_path=validation_relative_path(run_id, "artifact.json"),
+        expected_payload=expected_continue_artifact_payload(run_id),
+    )
+
+    start_result = {
+        "message": summarize_history_message(start_message or {}),
+        "messageCompleted": message_completed(start_message or {}),
+        "startText": start_text,
+        "artifactJson": start_json,
+    }
+    start_result["passed"] = bool(start_result["messageCompleted"] and start_text.get("matched") and start_json.get("matched"))
+
+    continue_result = {
+        "message": summarize_history_message(continue_message or {}),
+        "messageCompleted": message_completed(continue_message or {}),
+        "continueText": continue_text,
+        "artifactJson": continue_json,
+    }
+    continue_result["passed"] = bool(
+        continue_result["messageCompleted"] and continue_text.get("matched") and continue_json.get("matched")
+    )
+
+    return {
+        "assistantTurnCount": len(assistant_messages),
+        "assistantMessages": [summarize_history_message(message) for message in assistant_messages],
+        "start": start_result,
+        "continue": continue_result,
+    }
 
 
 
@@ -922,30 +1228,51 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         }
         save_json_file(summary_path, summary)
 
-        inspection_data = wait_for_inspection(
+        completion_timeout_sec = max(config["waitForExecutionSec"], config["inspectRetrySec"] * max(args.inspect_attempts, 1))
+        inspection_data = wait_for_terminal_inspection(
             config,
             registry_path=registry_path,
             artifact_dir=artifact_dir,
             cwd=repo_root,
             session_id=session_id,
             workspace=config["workspace"],
-            retry_sec=config["inspectRetrySec"],
-            attempts=args.inspect_attempts,
+            timeout_sec=completion_timeout_sec,
+            poll_interval_sec=args.poll_interval_sec,
+            label_prefix="03-inspect-terminal",
         )
         current_state = inspection_current_state(inspection_data)
+        latest_terminal_message = inspection_latest_message(inspection_data)
         checks.append(
             bool_check(
                 "inspect_current_state",
-                bool(current_state.get("status"))
-                and (bool(current_state.get("latestMeaningfulPreview")) or current_state.get("status") in TERMINAL_STATUSES),
+                bool(current_state.get("status")) and current_state.get("status") in TERMINAL_STATUSES,
                 details={
                     "status": current_state.get("status"),
                     "phase": current_state.get("phase"),
                     "latestMeaningfulPreview": current_state.get("latestMeaningfulPreview"),
+                    "latestMessageRole": latest_terminal_message.get("role"),
+                    "latestMessageStatus": latest_terminal_message.get("status"),
+                },
+            )
+        )
+        checks.append(
+            bool_check(
+                "session_completed_terminal",
+                str(current_state.get("status") or "").strip().lower() == "completed"
+                and str(latest_terminal_message.get("role") or "").strip().lower() == "assistant"
+                and str(latest_terminal_message.get("status") or "").strip().lower() == "completed"
+                and bool(latest_terminal_message.get("completedAt")),
+                details={
+                    "status": current_state.get("status"),
+                    "phase": current_state.get("phase"),
+                    "allTodosCompleted": current_state.get("allTodosCompleted"),
+                    "hasPendingWork": current_state.get("hasPendingWork"),
+                    "latestMessage": summarize_history_message(latest_terminal_message),
                 },
             )
         )
         scenario["inspectionCurrentState"] = current_state
+        scenario["terminalLatestMessage"] = summarize_history_message(latest_terminal_message)
         save_json_file(summary_path, summary)
 
         stop_result = run_json_command(
@@ -1024,7 +1351,7 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
                 and attached_watcher_id != watcher_id
                 and attached_watcher.get("watchLive") is True
                 and attach_rehydration.get("purpose") == "current_state_rebuild"
-                and bool(attach_current_state.get("status")),
+                and str(attach_current_state.get("status") or "").strip().lower() == "completed",
                 details={
                     "attachedWatcherId": attached_watcher_id,
                     "priorWatcherId": watcher_id,
@@ -1035,45 +1362,55 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             )
         )
         scenario["attachedWatcherId"] = attached_watcher_id
+        scenario["attachedInspectionCurrentState"] = attach_current_state
         save_json_file(summary_path, summary)
 
-        history_result = run_json_command(
-            "06-inspect-history",
-            build_manager_argv(
-                config,
-                registry_path=registry_path,
-                command="inspect-history",
-                extra_args=[
-                    "--opencode-session-id",
-                    session_id,
-                    "--opencode-workspace",
-                    config["workspace"],
-                    "--history-message-limit",
-                    str(config["historyMessageLimit"]),
-                    "--watch-timeout-sec",
-                    str(config["watchTimeoutSec"]),
-                ],
-            ),
+        history_scan = scan_recent_history_messages(
+            config,
+            registry_path=registry_path,
             artifact_dir=artifact_dir,
             cwd=repo_root,
+            session_id=session_id,
+            workspace=config["workspace"],
         )
-        history_data = history_result.data
-        history = history_data.get("history") if isinstance(history_data.get("history"), dict) else {}
-        history_selection = history.get("selection") if isinstance(history.get("selection"), dict) else {}
-        history_message = history.get("message") if isinstance(history.get("message"), dict) else {}
-        tool_calls = history_message.get("toolCalls") if isinstance(history_message.get("toolCalls"), list) else []
+        history_messages = history_scan.get("messages") if isinstance(history_scan.get("messages"), list) else []
+        latest_history_message = history_messages[0] if history_messages else {}
+        latest_tool_calls = latest_history_message.get("toolCalls") if isinstance(latest_history_message.get("toolCalls"), list) else []
+        business_completion = evaluate_workspace_business_completion(run_id, history_messages)
         checks.append(
             bool_check(
                 "inspect_history",
-                bool(history_selection.get("messageId")) and isinstance(history.get("recentAnchors"), list),
+                bool(latest_history_message.get("messageId")) and business_completion.get("assistantTurnCount", 0) >= 2,
                 details={
-                    "messageId": history_selection.get("messageId"),
-                    "recentIndex": history_selection.get("recentIndex"),
-                    "toolCallCount": len(tool_calls),
+                    "messageId": latest_history_message.get("messageId"),
+                    "recentIndex": latest_history_message.get("recentIndex"),
+                    "toolCallCount": len(latest_tool_calls),
+                    "assistantTurnCount": business_completion.get("assistantTurnCount"),
+                    "scannedIndices": history_scan.get("scannedIndices"),
                 },
             )
         )
-        scenario["historySelection"] = history_selection
+        checks.append(
+            bool_check(
+                "workspace_start_artifact_content",
+                bool((business_completion.get("start") or {}).get("passed")),
+                details=business_completion.get("start") or {},
+            )
+        )
+        checks.append(
+            bool_check(
+                "workspace_continue_artifact_content",
+                bool((business_completion.get("continue") or {}).get("passed")),
+                details=business_completion.get("continue") or {},
+            )
+        )
+        scenario["historyScan"] = {
+            "messageCountInWindow": history_scan.get("messageCountInWindow"),
+            "scanLimit": history_scan.get("scanLimit"),
+            "scannedIndices": history_scan.get("scannedIndices"),
+            "messages": [summarize_history_message(message) for message in history_messages],
+        }
+        scenario["businessCompletion"] = business_completion
         save_json_file(summary_path, summary)
 
         if attached_watcher_id:
