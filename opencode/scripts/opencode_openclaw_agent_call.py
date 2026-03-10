@@ -8,7 +8,12 @@ import sys
 from pathlib import Path
 from typing import Callable
 
-from opencode_delivery_handoff import assert_handoff_boundary, decode_system_event_text
+from opencode_delivery_handoff import (
+    assert_handoff_boundary,
+    decode_system_event_text,
+    extract_agent_input_from_system_event_envelope,
+    extract_runtime_signal_from_system_event_envelope,
+)
 
 ALLOWED_AGENT_CALL_KEYS = frozenset({
     "kind",
@@ -42,14 +47,16 @@ def load_json_input(value: str):
     return json.loads(Path(value).read_text())
 
 
-def build_agent_message(system_event_text: str) -> str:
+def build_agent_message(system_event_text: str, *, handoff: dict | None = None) -> str:
     envelope = decode_system_event_text(system_event_text)
-    consumption = envelope["consumptionPolicy"]
-    agent_input = envelope["agentInput"]
+    runtime_signal = extract_runtime_signal_from_system_event_envelope(envelope)
+    handoff_input = assert_handoff_boundary(dict(handoff)) if handoff is not None else None
+    agent_input = handoff_input or extract_agent_input_from_system_event_envelope(envelope) or {}
     task_cluster = agent_input.get("taskCluster") or {}
     reply_policy = agent_input.get("replyPolicy") or {}
-    runtime_signal = agent_input.get("runtimeSignal") or {}
-    avoid = ", ".join(item.replace("_", " ") for item in consumption["avoid"])
+    avoid = (
+        "handoff mechanics, routing details, transport details, prompt mechanics, verbatim signal payload"
+    )
     cluster_guidance = ""
     if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
         cluster_guidance = (
@@ -67,7 +74,7 @@ def build_agent_message(system_event_text: str) -> str:
         )
     return (
         "Runtime task update for the current conversation.\n"
-        f"Treat the payload below as {consumption['treatAs'].replace('_', ' ')}.\n"
+        "Treat the payload below as internal runtime signal.\n"
         + inspect_guidance
         + "If you reply visibly, continue the task conversation naturally for the user.\n"
         + cluster_guidance
@@ -109,9 +116,14 @@ def build_idempotency_basis(
     system_event_text: str,
     *,
     envelope: dict | None = None,
+    handoff: dict | None = None,
 ) -> dict:
     safe_envelope = envelope or decode_system_event_text(system_event_text)
-    agent_input = safe_envelope["agentInput"]
+    handoff_input = assert_handoff_boundary(dict(handoff)) if handoff is not None else None
+    agent_input = handoff_input or extract_agent_input_from_system_event_envelope(safe_envelope) or {}
+    runtime_signal = extract_runtime_signal_from_system_event_envelope(safe_envelope)
+    if handoff_input is not None:
+        runtime_signal = handoff_input.get("runtimeSignal") or runtime_signal
     return {
         "kind": "opencode_origin_session_handoff_idempotency_v1",
         "sessionKey": session_key,
@@ -119,7 +131,7 @@ def build_idempotency_basis(
         "action": agent_input.get("action"),
         "updateType": agent_input.get("updateType"),
         "facts": _stable_subset(agent_input.get("facts") or {}, STABLE_IDEMPOTENCY_FACT_KEYS),
-        "runtimeSignal": _stable_subset(agent_input.get("runtimeSignal") or {}, STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS),
+        "runtimeSignal": _stable_subset(runtime_signal or {}, STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS),
         "taskCluster": _stable_subset(agent_input.get("taskCluster") or {}, STABLE_IDEMPOTENCY_TASK_CLUSTER_KEYS),
     }
 
@@ -129,8 +141,9 @@ def build_idempotency_key(
     system_event_text: str,
     *,
     envelope: dict | None = None,
+    handoff: dict | None = None,
 ) -> str:
-    basis = build_idempotency_basis(session_key, system_event_text, envelope=envelope)
+    basis = build_idempotency_basis(session_key, system_event_text, envelope=envelope, handoff=handoff)
     canonical = json.dumps(basis, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"opencode-origin-handoff-{digest[:32]}"
@@ -178,15 +191,22 @@ def build_gateway_agent_call(
     payload = template["payload"]
     system_event_text = payload["text"]
     envelope = decode_system_event_text(system_event_text)
-    envelope_origin = envelope["agentInput"]["routing"].get("originSession")
-    if envelope_origin != session_key:
-        raise ValueError("openclaw-agent-call refuses session rewrite: envelope originSession must equal target sessionKey")
+    runtime_signal = extract_runtime_signal_from_system_event_envelope(envelope)
+    expected_runtime_signal = _stable_subset(result.get("runtimeSignal") or {}, STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS)
+    if _stable_subset(runtime_signal, STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS) != expected_runtime_signal:
+        raise ValueError("openclaw-agent-call refuses runtime signal rewrite: system event payload must match handoff runtimeSignal")
+
+    legacy_agent_input = extract_agent_input_from_system_event_envelope(envelope)
+    if legacy_agent_input is not None:
+        envelope_origin = legacy_agent_input["routing"].get("originSession")
+        if envelope_origin != session_key:
+            raise ValueError("openclaw-agent-call refuses session rewrite: envelope originSession must equal target sessionKey")
 
     gateway_params = {
         "sessionKey": session_key,
-        "message": build_agent_message(system_event_text),
+        "message": build_agent_message(system_event_text, handoff=result),
         "deliver": True,
-        "idempotencyKey": build_idempotency_key(session_key, system_event_text, envelope=envelope),
+        "idempotencyKey": build_idempotency_key(session_key, system_event_text, envelope=envelope, handoff=result),
     }
     argv = [
         "openclaw",

@@ -73,31 +73,20 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(payload["kind"], "systemEvent")
         envelope = self.parse_system_event_text(payload["text"])
         self.assertEqual(envelope["kind"], "opencode_origin_session_handoff")
-        self.assertEqual(envelope["deliveryPolicy"], {
-            "primary": "origin_session_system_event",
-        })
-        self.assertEqual(envelope["consumptionPolicy"], {
-            "treatAs": "internal_runtime_signal",
-            "ifVisible": "inspect_once_current_state_then_continue_current_conversation_naturally",
-            "avoid": [
-                "handoff_mechanics",
-                "routing_details",
-                "transport_details",
-                "prompt_mechanics",
-                "verbatim_signal_payload",
-            ],
-        })
-        self.assertEqual(envelope["agentInput"]["routing"]["originSession"], "origin-session-example")
-        self.assertEqual(envelope["agentInput"]["updateType"], "progress")
-        self.assertEqual(envelope["agentInput"]["taskCluster"]["key"], "task-cluster-release")
-        self.assertEqual(envelope["agentInput"]["replyPolicy"]["replyDefault"], "send_if_not_cluster_superseded")
+        self.assertEqual(envelope["version"], "v2")
         self.assertEqual(
-            envelope["agentInput"]["runtimeSignal"],
+            envelope["runtimeSignal"],
             {
                 "action": "inspect_once_current_state",
                 "opencodeSessionId": "ses_release_demo",
             },
         )
+        for forbidden_key in ["agentInput", "deliveryPolicy", "consumptionPolicy", "facts", "cadence", "taskCluster", "replyPolicy"]:
+            self.assertNotIn(forbidden_key, envelope)
+        self.assertNotIn('"taskCluster"', payload["text"])
+        self.assertNotIn('"replyPolicy"', payload["text"])
+        self.assertNotIn('"cadence"', payload["text"])
+        self.assertNotIn('"facts"', payload["text"])
 
     def test_legacy_agent_input_is_still_accepted_and_normalized_to_runtime_signal(self):
         agent_input = {

@@ -115,6 +115,7 @@ class OpenClawAgentCallTests(unittest.TestCase):
         first_basis = build_idempotency_basis(
             first_plan["sessionKey"],
             first_handoff["openclawDelivery"]["systemEventTemplate"]["payload"]["text"],
+            handoff=first_handoff,
         )
         self.assertEqual(
             first_basis,

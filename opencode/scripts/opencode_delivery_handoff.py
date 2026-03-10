@@ -30,7 +30,8 @@ ALLOWED_OPENCLAW_DELIVERY_KEYS = frozenset({
 })
 ALLOWED_SYSTEM_EVENT_TEMPLATE_KEYS = frozenset({"sessionKey", "payload"})
 ALLOWED_SYSTEM_EVENT_PAYLOAD_KEYS = frozenset({"kind", "text"})
-ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy", "consumptionPolicy"})
+ALLOWED_SYSTEM_EVENT_ENVELOPE_V2_KEYS = frozenset({"kind", "version", "runtimeSignal"})
+ALLOWED_SYSTEM_EVENT_ENVELOPE_V1_KEYS = frozenset({"kind", "version", "agentInput", "deliveryPolicy", "consumptionPolicy"})
 ALLOWED_DELIVERY_POLICY_KEYS = frozenset({"primary"})
 ALLOWED_CONSUMPTION_POLICY_KEYS = frozenset({"treatAs", "ifVisible", "avoid"})
 SYSTEM_EVENT_TEXT_HEADER = "OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1"
@@ -130,52 +131,88 @@ def build_system_event_envelope(agent_input: dict):
     base = assert_agent_input_boundary(dict(agent_input))
     envelope = {
         "kind": "opencode_origin_session_handoff",
-        "version": "v1",
-        "agentInput": base,
-        "deliveryPolicy": {
-            "primary": "origin_session_system_event",
-        },
-        "consumptionPolicy": {
-            "treatAs": "internal_runtime_signal",
-            "ifVisible": "inspect_once_current_state_then_continue_current_conversation_naturally",
-            "avoid": [
-                "handoff_mechanics",
-                "routing_details",
-                "transport_details",
-                "prompt_mechanics",
-                "verbatim_signal_payload",
-            ],
-        },
+        "version": "v2",
+        "runtimeSignal": dict(base["runtimeSignal"]),
     }
     return assert_system_event_envelope_boundary(envelope)
 
 
+def assert_system_event_runtime_signal_boundary(runtime_signal: dict) -> dict:
+    signal = dict(runtime_signal)
+    signal_keys = set(signal)
+    if signal_keys != ALLOWED_RUNTIME_SIGNAL_KEYS:
+        raise ValueError(
+            "delivery-handoff boundary violation: unexpected system event runtimeSignal keys "
+            f"{sorted(signal_keys - ALLOWED_RUNTIME_SIGNAL_KEYS)}"
+        )
+    action = signal.get("action")
+    if not isinstance(action, str) or not action:
+        raise ValueError("delivery-handoff boundary violation: runtimeSignal.action must be a non-empty string")
+    session_id = signal.get("opencodeSessionId")
+    if session_id is not None and not isinstance(session_id, str):
+        raise ValueError("delivery-handoff boundary violation: runtimeSignal.opencodeSessionId must be a string or null")
+    return signal
+
+
 def assert_system_event_envelope_boundary(envelope: dict) -> dict:
-    keys = set(envelope)
-    if keys != ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS:
-        raise ValueError(
-            f"delivery-handoff boundary violation: unexpected system event envelope keys {sorted(keys - ALLOWED_SYSTEM_EVENT_ENVELOPE_KEYS)}"
-        )
+    safe_envelope = dict(envelope)
+    if safe_envelope.get("kind") != "opencode_origin_session_handoff":
+        raise ValueError("delivery-handoff boundary violation: unexpected system event envelope kind")
 
-    delivery_policy_keys = set(envelope["deliveryPolicy"])
-    if delivery_policy_keys != ALLOWED_DELIVERY_POLICY_KEYS:
-        raise ValueError(
-            "delivery-handoff boundary violation: unexpected deliveryPolicy keys "
-            f"{sorted(delivery_policy_keys - ALLOWED_DELIVERY_POLICY_KEYS)}"
-        )
+    version = safe_envelope.get("version")
+    if version == "v2":
+        keys = set(safe_envelope)
+        if keys != ALLOWED_SYSTEM_EVENT_ENVELOPE_V2_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected system event envelope keys "
+                f"{sorted(keys - ALLOWED_SYSTEM_EVENT_ENVELOPE_V2_KEYS)}"
+            )
+        safe_envelope["runtimeSignal"] = assert_system_event_runtime_signal_boundary(safe_envelope["runtimeSignal"])
+        return safe_envelope
 
-    consumption_policy_keys = set(envelope["consumptionPolicy"])
-    if consumption_policy_keys != ALLOWED_CONSUMPTION_POLICY_KEYS:
-        raise ValueError(
-            "delivery-handoff boundary violation: unexpected consumptionPolicy keys "
-            f"{sorted(consumption_policy_keys - ALLOWED_CONSUMPTION_POLICY_KEYS)}"
-        )
-    avoid = envelope["consumptionPolicy"].get("avoid")
-    if not isinstance(avoid, list) or not avoid or any(not isinstance(item, str) or not item for item in avoid):
-        raise ValueError("delivery-handoff boundary violation: consumptionPolicy.avoid must be a non-empty list of strings")
+    if version == "v1":
+        keys = set(safe_envelope)
+        if keys != ALLOWED_SYSTEM_EVENT_ENVELOPE_V1_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected legacy system event envelope keys "
+                f"{sorted(keys - ALLOWED_SYSTEM_EVENT_ENVELOPE_V1_KEYS)}"
+            )
 
-    assert_agent_input_boundary(dict(envelope["agentInput"]))
-    return envelope
+        delivery_policy_keys = set(safe_envelope["deliveryPolicy"])
+        if delivery_policy_keys != ALLOWED_DELIVERY_POLICY_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected deliveryPolicy keys "
+                f"{sorted(delivery_policy_keys - ALLOWED_DELIVERY_POLICY_KEYS)}"
+            )
+
+        consumption_policy_keys = set(safe_envelope["consumptionPolicy"])
+        if consumption_policy_keys != ALLOWED_CONSUMPTION_POLICY_KEYS:
+            raise ValueError(
+                "delivery-handoff boundary violation: unexpected consumptionPolicy keys "
+                f"{sorted(consumption_policy_keys - ALLOWED_CONSUMPTION_POLICY_KEYS)}"
+            )
+        avoid = safe_envelope["consumptionPolicy"].get("avoid")
+        if not isinstance(avoid, list) or not avoid or any(not isinstance(item, str) or not item for item in avoid):
+            raise ValueError("delivery-handoff boundary violation: consumptionPolicy.avoid must be a non-empty list of strings")
+
+        assert_agent_input_boundary(dict(safe_envelope["agentInput"]))
+        return safe_envelope
+
+    raise ValueError("delivery-handoff boundary violation: unsupported system event envelope version")
+
+
+def extract_runtime_signal_from_system_event_envelope(envelope: dict) -> dict:
+    safe_envelope = assert_system_event_envelope_boundary(envelope)
+    if safe_envelope["version"] == "v2":
+        return dict(safe_envelope["runtimeSignal"])
+    return dict(safe_envelope["agentInput"]["runtimeSignal"])
+
+
+def extract_agent_input_from_system_event_envelope(envelope: dict) -> dict | None:
+    safe_envelope = assert_system_event_envelope_boundary(envelope)
+    if safe_envelope["version"] == "v1":
+        return dict(safe_envelope["agentInput"])
+    return None
 
 
 def assert_system_event_payload_boundary(payload: dict) -> dict:
