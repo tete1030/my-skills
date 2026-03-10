@@ -68,6 +68,9 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertIn("lightweight runtime signal", plan["gatewayParams"]["message"])
         self.assertIn("one one-off inspect", plan["gatewayParams"]["message"])
         self.assertIn("speak from that current state", plan["gatewayParams"]["message"])
+        self.assertIn("do not start or attach a watcher", plan["gatewayParams"]["message"])
+        self.assertIn("opencode_manager.py inspect", plan["gatewayParams"]["message"])
+        self.assertIn("local-defaults.env", plan["gatewayParams"]["message"])
         self.assertIn("same task cluster", plan["gatewayParams"]["message"])
         self.assertIn("do not send another visible reply", plan["gatewayParams"]["message"])
         self.assertIn(

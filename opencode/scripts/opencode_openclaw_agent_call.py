@@ -8,6 +8,11 @@ import sys
 from pathlib import Path
 from typing import Callable
 
+SCRIPT_DIR = Path(__file__).resolve().parent
+REPO_ROOT = SCRIPT_DIR.parents[1]
+MANAGER_SCRIPT = SCRIPT_DIR / "opencode_manager.py"
+DEFAULT_MANAGER_DEFAULTS_ENV = REPO_ROOT / ".local" / "opencode-manager" / "local-defaults.env"
+
 from opencode_delivery_handoff import (
     assert_handoff_boundary,
     decode_system_event_text,
@@ -66,10 +71,27 @@ def build_agent_message(system_event_text: str, *, handoff: dict | None = None) 
     inspect_guidance = ""
     if runtime_signal.get("action") == "inspect_once_current_state":
         session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
+        inspect_command = (
+            "bash -lc "
+            + shlex.quote(
+                "set -a; "
+                f"source {shlex.quote(str(DEFAULT_MANAGER_DEFAULTS_ENV))}; "
+                "set +a; "
+                f"python3 {shlex.quote(str(MANAGER_SCRIPT))} inspect "
+                ' --opencode-base-url "$OPENCODE_BASE_URL"'
+                ' --opencode-workspace "$OPENCODE_WORKSPACE"'
+                f" --opencode-session-id {shlex.quote(str(session_hint))}"
+                ' --watch-message-limit "${OPENCODE_WATCH_MESSAGE_LIMIT:-10}"'
+                ' --watch-timeout-sec "${OPENCODE_WATCH_TIMEOUT_SEC:-20}"'
+            )
+        )
         inspect_guidance = (
             "Treat the payload below as a lightweight runtime signal, not as reply content to paraphrase.\n"
             f"Before any visible reply, do one one-off inspect of {session_hint} and speak from that current state.\n"
             "Do not restate the signal payload itself to the user.\n"
+            "Use one one-off inspect only; do not start or attach a watcher from the receiving session.\n"
+            "If you use exec, prefer exactly this single shell inspect command:\n"
+            f"{inspect_command}\n"
             "After that single inspect, do not continue polling unless the user explicitly asks or an allowed exception clearly applies.\n"
         )
     return (

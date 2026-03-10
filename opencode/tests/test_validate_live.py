@@ -104,6 +104,90 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
         self.assertEqual(summary["handoffEnvelope"]["runtimeSignal"]["opencodeSessionId"], "ses_demo_validate_live")
         self.assertEqual(summary["lastStep"]["watchAction"]["operation"], "execute")
 
+    def test_extract_event_window_finds_one_off_inspect_and_reply(self):
+        session_id = "ses_demo_receiver"
+        entries = [
+            {
+                "type": "message",
+                "message": {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "text",
+                            "text": SYSTEM_EVENT_TEXT_HEADER + "\n" + json.dumps(
+                                {
+                                    "kind": "opencode_origin_session_handoff",
+                                    "version": "v2",
+                                    "runtimeSignal": {
+                                        "action": "inspect_once_current_state",
+                                        "opencodeSessionId": session_id,
+                                    },
+                                },
+                                ensure_ascii=False,
+                                indent=2,
+                            ),
+                        }
+                    ],
+                },
+                "_lineNumber": 11,
+            },
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "toolCall",
+                            "name": "exec",
+                            "arguments": {
+                                "command": (
+                                    "bash -lc 'python3 /tmp/opencode_manager.py inspect "
+                                    f"--opencode-session-id {session_id}'"
+                                )
+                            },
+                        }
+                    ],
+                },
+                "_lineNumber": 12,
+            },
+            {
+                "type": "message",
+                "message": {
+                    "role": "toolResult",
+                    "toolName": "exec",
+                    "content": [{"type": "text", "text": '{"kind":"opencode_manager_inspect_v1","inspection":{"opencodeSession":{"opencodeSessionId":"ses_demo_receiver"},"rehydration":{"currentState":{"status":"completed"}},"currentStatus":"completed"}}'}],
+                },
+                "_lineNumber": 13,
+            },
+            {
+                "type": "message",
+                "message": {
+                    "role": "assistant",
+                    "content": [{"type": "text", "text": "已经完成，文件内容已确认。"}],
+                },
+                "_lineNumber": 14,
+            },
+        ]
+
+        window = validate_live.extract_event_window(entries, session_id=session_id, occurrence=1)
+
+        self.assertIsNotNone(window)
+        self.assertEqual(window["inspectEntryCount"], 1)
+        self.assertEqual(window["replyText"], "已经完成，文件内容已确认。")
+        self.assertTrue(validate_live.tool_result_is_opencode_inspect(window, session_id=session_id))
+        self.assertTrue(validate_live.receiver_reply_looks_like_current_state(window["replyText"], session_id=session_id))
+
+    def test_receiver_reply_looks_like_current_state_rejects_payload_parroting(self):
+        session_id = "ses_demo_receiver"
+        self.assertFalse(
+            validate_live.receiver_reply_looks_like_current_state(
+                f"OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1 runtimeSignal {session_id}",
+                session_id=session_id,
+            )
+        )
+        self.assertFalse(validate_live.receiver_reply_looks_like_current_state("NO_REPLY", session_id=session_id))
+        self.assertTrue(validate_live.receiver_reply_looks_like_current_state("现在已经完成了。", session_id=session_id))
+
     def test_build_manager_argv_omits_runtime_flags_for_registry_only_commands(self):
         config = {
             "baseUrl": "http://127.0.0.1:4096",
@@ -239,6 +323,33 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
 
         self.assertTrue(result["latestCompletedAssistantTurn"]["passed"])
         self.assertTrue(result["finalFileContent"]["passed"])
+
+    def test_evaluate_workspace_business_completion_accepts_final_text_preview_without_tool_output(self):
+        run_id = "vtest-text-preview"
+        history_messages = [
+            {
+                "messageId": "msg_done",
+                "recentIndex": 0,
+                "role": "assistant",
+                "status": "completed",
+                "completedAt": "2026-03-10T16:20:05Z",
+                "textPreview": (
+                    "Printed contents: "
+                    + validate_live.expected_start_text(run_id)
+                    + " "
+                    + validate_live.expected_continue_text(run_id)
+                    + " status ok"
+                ),
+                "toolCallCount": 0,
+                "toolCalls": [],
+            }
+        ]
+
+        result = validate_live.evaluate_workspace_business_completion(run_id, history_messages)
+
+        self.assertTrue(result["latestCompletedAssistantTurn"]["passed"])
+        self.assertTrue(result["finalFileContent"]["passed"])
+        self.assertEqual(result["finalFileContent"]["match"]["contentSource"], "textPreview")
 
     def test_evaluate_workspace_business_completion_requires_completed_assistant_turn(self):
         run_id = "vtest-fail"

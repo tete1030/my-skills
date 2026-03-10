@@ -15,6 +15,7 @@ from typing import Any
 
 from opencode_api_client import OpenCodeClient
 from opencode_delivery_handoff import SYSTEM_EVENT_TEXT_HEADER
+from opencode_openclaw_agent_call import build_gateway_agent_call
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 REPO_ROOT = SCRIPT_DIR.parents[1]
@@ -28,6 +29,9 @@ DEFAULT_WAIT_FOR_EXECUTION_SEC = 60
 DEFAULT_WAIT_FOR_STOP_SEC = 30
 DEFAULT_INSPECT_RETRY_SEC = 5
 DEFAULT_INSPECT_ATTEMPTS = 4
+DEFAULT_RECEIVER_WAIT_SEC = 60
+DEFAULT_RECEIVER_QUIET_SEC = 8
+DEFAULT_OPENCLAW_SESSIONS_INDEX = Path.home() / ".openclaw" / "agents" / "main" / "sessions" / "sessions.json"
 TERMINAL_STATUSES = {"completed", "failed", "cancelled", "blocked"}
 CORE_CHECK_NAMES = (
     "start_watcher_live",
@@ -39,6 +43,11 @@ CORE_CHECK_NAMES = (
     "latest_completed_assistant_turn",
     "workspace_final_file_content",
     "attach_rehydration",
+    "receiver_first_event_observed",
+    "receiver_one_off_inspect",
+    "receiver_visible_reply_from_current_state",
+    "receiver_quiet_after_reply",
+    "receiver_duplicate_no_visible_reply",
 )
 
 
@@ -515,12 +524,297 @@ def summarize_watch_log(watch_log_path: Path) -> dict[str, Any]:
         "documentCount": len(documents),
         "stepCount": len(steps),
         "handoffEnvelope": envelope,
+        "handoff": handoff,
         "lastStep": {
             "watchAction": last_step.get("watchAction"),
             "deliveryAction": delivery.get("deliveryAction"),
             "routeStatus": delivery.get("routeStatus"),
         },
     }
+
+
+
+def load_openclaw_sessions_index(path: Path = DEFAULT_OPENCLAW_SESSIONS_INDEX) -> dict[str, Any]:
+    if not path.exists():
+        raise ValidationError(f"OpenClaw sessions index not found: {path}")
+    payload = load_json_file(path)
+    if not isinstance(payload, dict):
+        raise ValidationError(f"OpenClaw sessions index must be a JSON object: {path}")
+    return payload
+
+
+
+def resolve_openclaw_session_file(
+    session_key: str,
+    *,
+    index_path: Path = DEFAULT_OPENCLAW_SESSIONS_INDEX,
+    timeout_sec: int = DEFAULT_RECEIVER_WAIT_SEC,
+    poll_interval_sec: float = DEFAULT_POLL_INTERVAL_SEC,
+) -> Path:
+    deadline = time.monotonic() + timeout_sec
+    last_keys: list[str] = []
+    while time.monotonic() <= deadline:
+        sessions_index = load_openclaw_sessions_index(index_path)
+        last_keys = list(sessions_index)
+        entry = sessions_index.get(session_key)
+        if isinstance(entry, dict):
+            session_file = normalize_optional_string(entry.get("sessionFile"))
+            if session_file and Path(session_file).exists():
+                return Path(session_file)
+        time.sleep(poll_interval_sec)
+    raise ValidationError(
+        f"OpenClaw session file not resolved for {session_key!r} within {timeout_sec}s; known keys sample={last_keys[:6]}"
+    )
+
+
+
+def read_jsonl_objects(path: Path) -> list[dict[str, Any]]:
+    if not path.exists():
+        raise ValidationError(f"JSONL file not found: {path}")
+    objects: list[dict[str, Any]] = []
+    for line_number, raw in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+        if not raw.strip():
+            continue
+        try:
+            item = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise ValidationError(f"invalid JSONL line {line_number} in {path}: {exc}") from exc
+        if isinstance(item, dict):
+            item["_lineNumber"] = line_number
+            objects.append(item)
+    return objects
+
+
+
+def session_entry_role(entry: dict[str, Any]) -> str:
+    message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    return str(message.get("role") or "").strip().lower()
+
+
+
+def session_entry_content_items(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    message = entry.get("message") if isinstance(entry.get("message"), dict) else {}
+    content = message.get("content") if isinstance(message.get("content"), list) else []
+    return [item for item in content if isinstance(item, dict)]
+
+
+
+def session_entry_text(entry: dict[str, Any]) -> str:
+    texts = [item.get("text") for item in session_entry_content_items(entry) if item.get("type") == "text" and isinstance(item.get("text"), str)]
+    return "\n".join(texts).strip()
+
+
+
+def session_entry_tool_calls(entry: dict[str, Any]) -> list[dict[str, Any]]:
+    tool_calls: list[dict[str, Any]] = []
+    for item in session_entry_content_items(entry):
+        if item.get("type") != "toolCall":
+            continue
+        arguments = item.get("arguments") if isinstance(item.get("arguments"), dict) else {}
+        tool_calls.append(
+            {
+                "name": item.get("name"),
+                "arguments": arguments,
+                "argumentsText": json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+            }
+        )
+    return tool_calls
+
+
+
+def entry_is_runtime_signal(entry: dict[str, Any], *, session_id: str) -> bool:
+    return (
+        session_entry_role(entry) == "user"
+        and SYSTEM_EVENT_TEXT_HEADER in session_entry_text(entry)
+        and session_id in session_entry_text(entry)
+    )
+
+
+
+def entry_is_terminal_assistant_text(entry: dict[str, Any]) -> bool:
+    return session_entry_role(entry) == "assistant" and bool(session_entry_text(entry))
+
+
+
+def entry_contains_session_inspect(entry: dict[str, Any], *, session_id: str) -> bool:
+    for tool_call in session_entry_tool_calls(entry):
+        arguments = tool_call.get("arguments") or {}
+        command = str(arguments.get("command") or "")
+        if session_id not in command and session_id not in str(tool_call.get("argumentsText") or ""):
+            continue
+        if "opencode_manager.py inspect" in command or "opencode_manager.py inspect-history" in command:
+            return True
+    return False
+
+
+
+def extract_event_window(entries: list[dict[str, Any]], *, session_id: str, occurrence: int = 1) -> dict[str, Any] | None:
+    matched_starts = [index for index, entry in enumerate(entries) if entry_is_runtime_signal(entry, session_id=session_id)]
+    if len(matched_starts) < occurrence:
+        return None
+    start_index = matched_starts[occurrence - 1]
+    next_start_index = matched_starts[occurrence] if len(matched_starts) > occurrence else len(entries)
+    terminal_index = None
+    for index in range(start_index + 1, next_start_index):
+        if entry_is_terminal_assistant_text(entries[index]):
+            terminal_index = index
+            break
+    if terminal_index is None:
+        return None
+    window_entries = entries[start_index : terminal_index + 1]
+    return {
+        "occurrence": occurrence,
+        "startIndex": start_index,
+        "terminalIndex": terminal_index,
+        "startLine": entries[start_index].get("_lineNumber"),
+        "terminalLine": entries[terminal_index].get("_lineNumber"),
+        "entries": window_entries,
+        "eventText": session_entry_text(entries[start_index]),
+        "replyText": session_entry_text(entries[terminal_index]),
+        "inspectEntryCount": sum(1 for entry in window_entries if entry_contains_session_inspect(entry, session_id=session_id)),
+        "inspectEntries": [
+            {
+                "lineNumber": entry.get("_lineNumber"),
+                "timestamp": entry.get("timestamp"),
+                "toolCalls": session_entry_tool_calls(entry),
+                "text": session_entry_text(entry),
+            }
+            for entry in window_entries
+            if entry_contains_session_inspect(entry, session_id=session_id)
+        ],
+        "assistantTextEntries": [
+            {
+                "lineNumber": entry.get("_lineNumber"),
+                "timestamp": entry.get("timestamp"),
+                "text": session_entry_text(entry),
+            }
+            for entry in window_entries
+            if entry_is_terminal_assistant_text(entry)
+        ],
+        "toolResultEntries": [
+            {
+                "lineNumber": entry.get("_lineNumber"),
+                "timestamp": entry.get("timestamp"),
+                "toolName": ((entry.get("message") or {}).get("toolName")),
+                "text": session_entry_text(entry),
+            }
+            for entry in window_entries
+            if session_entry_role(entry) == "toolresult"
+        ],
+    }
+
+
+
+def wait_for_event_window(
+    session_file: Path,
+    *,
+    baseline_line_count: int,
+    session_id: str,
+    occurrence: int,
+    timeout_sec: int,
+    poll_interval_sec: float,
+) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    deadline = time.monotonic() + timeout_sec
+    latest_entries: list[dict[str, Any]] = []
+    while time.monotonic() <= deadline:
+        all_entries = read_jsonl_objects(session_file)
+        latest_entries = all_entries[baseline_line_count:]
+        window = extract_event_window(latest_entries, session_id=session_id, occurrence=occurrence)
+        if window is not None:
+            return window, latest_entries
+        time.sleep(poll_interval_sec)
+    raise ValidationError(
+        f"receiver session never completed event window occurrence={occurrence} for {session_id} within {timeout_sec}s"
+    )
+
+
+
+def wait_for_session_quiet(
+    session_file: Path,
+    *,
+    minimum_line_count: int,
+    quiet_sec: int,
+    poll_interval_sec: float,
+) -> list[dict[str, Any]]:
+    time.sleep(max(quiet_sec, 0))
+    entries = read_jsonl_objects(session_file)
+    if len(entries) < minimum_line_count:
+        raise ValidationError(
+            f"receiver session shrank unexpectedly: expected at least {minimum_line_count} lines, got {len(entries)}"
+        )
+    return entries
+
+
+
+def summarize_receiver_window(window: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: value
+        for key, value in {
+            "occurrence": window.get("occurrence"),
+            "startLine": window.get("startLine"),
+            "terminalLine": window.get("terminalLine"),
+            "inspectEntryCount": window.get("inspectEntryCount"),
+            "replyText": window.get("replyText"),
+            "inspectEntries": window.get("inspectEntries"),
+            "toolResultEntries": window.get("toolResultEntries"),
+            "assistantTextEntries": window.get("assistantTextEntries"),
+        }.items()
+        if value is not None
+    }
+
+
+
+def receiver_reply_looks_like_current_state(reply_text: str, *, session_id: str) -> bool:
+    text = (reply_text or "").strip()
+    if not text or text == "NO_REPLY":
+        return False
+    forbidden = [
+        SYSTEM_EVENT_TEXT_HEADER,
+        "runtimeSignal",
+        "inspect_once_current_state",
+        session_id,
+    ]
+    return not any(token in text for token in forbidden)
+
+
+
+def tool_result_is_opencode_inspect(window: dict[str, Any], *, session_id: str) -> bool:
+    for entry in window.get("toolResultEntries") or []:
+        text = str(entry.get("text") or "")
+        if '"kind": "opencode_manager_inspect_v1"' not in text and '"kind":"opencode_manager_inspect_v1"' not in text:
+            continue
+        if session_id not in text:
+            continue
+        if '"currentStatus":' in text or '"currentState":' in text:
+            return True
+    return False
+
+
+
+def run_gateway_agent_call(
+    label: str,
+    *,
+    gateway_params: dict[str, Any],
+    artifact_dir: Path,
+    cwd: Path,
+    timeout_ms: int = 10_000,
+) -> CommandResult:
+    return run_json_command(
+        label,
+        [
+            "openclaw",
+            "gateway",
+            "call",
+            "agent",
+            "--json",
+            "--timeout",
+            str(timeout_ms),
+            "--params",
+            json.dumps(gateway_params, ensure_ascii=False),
+        ],
+        artifact_dir=artifact_dir,
+        cwd=cwd,
+    )
 
 
 
@@ -946,6 +1240,17 @@ def contains_expected_output(candidate: str, expected_output: str) -> bool:
 
 
 def find_final_output_in_message(message: dict[str, Any], *, expected_output: str) -> dict[str, Any]:
+    text_preview = message.get("textPreview")
+    if isinstance(text_preview, str) and contains_expected_output(text_preview, expected_output):
+        return {
+            "matched": True,
+            "toolName": None,
+            "action": "text",
+            "contentSource": "textPreview",
+            "commandPreview": None,
+            "outputTailLines": None,
+        }
+
     tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
     for tool_call in tool_calls:
         if not isinstance(tool_call, dict):
@@ -1094,6 +1399,15 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         "registryPath": str(registry_path),
     }
     summary["scenario"] = scenario
+    save_json_file(summary_path, summary)
+
+    receiver_session_file = resolve_openclaw_session_file(config["openclawSessionKey"])
+    receiver_baseline_entries = read_jsonl_objects(receiver_session_file)
+    scenario["receiverSession"] = {
+        "sessionKey": config["openclawSessionKey"],
+        "sessionFile": str(receiver_session_file),
+        "baselineLineCount": len(receiver_baseline_entries),
+    }
     save_json_file(summary_path, summary)
 
     session_id: str | None = None
@@ -1297,6 +1611,71 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         scenario["terminalLatestMessage"] = summarize_history_message(latest_terminal_message)
         save_json_file(summary_path, summary)
 
+        first_receiver_window, _receiver_entries = wait_for_event_window(
+            receiver_session_file,
+            baseline_line_count=scenario["receiverSession"]["baselineLineCount"],
+            session_id=session_id,
+            occurrence=1,
+            timeout_sec=DEFAULT_RECEIVER_WAIT_SEC,
+            poll_interval_sec=args.poll_interval_sec,
+        )
+        first_reply_text = str(first_receiver_window.get("replyText") or "")
+        first_reply_line = int(first_receiver_window.get("terminalLine") or 0)
+        receiver_quiet_entries = wait_for_session_quiet(
+            receiver_session_file,
+            minimum_line_count=first_reply_line,
+            quiet_sec=DEFAULT_RECEIVER_QUIET_SEC,
+            poll_interval_sec=args.poll_interval_sec,
+        )
+        new_entries_after_first_reply = [entry for entry in receiver_quiet_entries if int(entry.get("_lineNumber") or 0) > first_reply_line]
+        checks.append(
+            bool_check(
+                "receiver_first_event_observed",
+                True,
+                details=summarize_receiver_window(first_receiver_window),
+            )
+        )
+        checks.append(
+            bool_check(
+                "receiver_one_off_inspect",
+                first_receiver_window.get("inspectEntryCount") == 1
+                and tool_result_is_opencode_inspect(first_receiver_window, session_id=session_id),
+                details=summarize_receiver_window(first_receiver_window),
+            )
+        )
+        checks.append(
+            bool_check(
+                "receiver_visible_reply_from_current_state",
+                receiver_reply_looks_like_current_state(first_reply_text, session_id=session_id),
+                details={
+                    **summarize_receiver_window(first_receiver_window),
+                    "replyText": first_reply_text,
+                },
+            )
+        )
+        checks.append(
+            bool_check(
+                "receiver_quiet_after_reply",
+                not any(session_entry_role(entry) == "assistant" for entry in new_entries_after_first_reply),
+                details={
+                    "replyLine": first_reply_line,
+                    "newAssistantEntriesAfterReply": [
+                        {
+                            "lineNumber": entry.get("_lineNumber"),
+                            "role": session_entry_role(entry),
+                            "text": session_entry_text(entry),
+                            "toolCalls": session_entry_tool_calls(entry),
+                        }
+                        for entry in new_entries_after_first_reply
+                        if session_entry_role(entry) == "assistant"
+                    ],
+                },
+            )
+        )
+        scenario["receiverSession"]["firstEvent"] = summarize_receiver_window(first_receiver_window)
+        save_json_file(artifact_dir / "receiver-first-window.json", summarize_receiver_window(first_receiver_window))
+        save_json_file(summary_path, summary)
+
         stop_result = run_json_command(
             "04-stop-watcher",
             build_manager_argv(
@@ -1341,6 +1720,66 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
             poll_interval_sec=args.poll_interval_sec,
             label_prefix="04a-wait-stop",
         )
+        save_json_file(summary_path, summary)
+
+        handoff_for_receiver = watch_log_summary.get("handoff") if isinstance(watch_log_summary.get("handoff"), dict) else None
+        if not handoff_for_receiver:
+            raise ValidationError("watch log did not retain the executed handoff needed for receiver duplicate validation")
+        duplicate_plan = build_gateway_agent_call(handoff_for_receiver, timeout_ms=10_000)
+        duplicate_gateway_params = dict(duplicate_plan["gatewayParams"] or {})
+        duplicate_gateway_params["idempotencyKey"] = f"{duplicate_gateway_params['idempotencyKey']}-replay-{uuid.uuid4().hex[:8]}"
+        duplicate_baseline_entries = read_jsonl_objects(receiver_session_file)
+        duplicate_call = run_gateway_agent_call(
+            "04b-receiver-duplicate-call",
+            gateway_params=duplicate_gateway_params,
+            artifact_dir=artifact_dir,
+            cwd=repo_root,
+        )
+        duplicate_receiver_window, _duplicate_entries = wait_for_event_window(
+            receiver_session_file,
+            baseline_line_count=len(duplicate_baseline_entries),
+            session_id=session_id,
+            occurrence=1,
+            timeout_sec=DEFAULT_RECEIVER_WAIT_SEC,
+            poll_interval_sec=args.poll_interval_sec,
+        )
+        duplicate_reply_line = int(duplicate_receiver_window.get("terminalLine") or 0)
+        duplicate_quiet_entries = wait_for_session_quiet(
+            receiver_session_file,
+            minimum_line_count=duplicate_reply_line,
+            quiet_sec=DEFAULT_RECEIVER_QUIET_SEC,
+            poll_interval_sec=args.poll_interval_sec,
+        )
+        duplicate_after_reply = [entry for entry in duplicate_quiet_entries if int(entry.get("_lineNumber") or 0) > duplicate_reply_line]
+        checks.append(
+            bool_check(
+                "receiver_duplicate_no_visible_reply",
+                str(duplicate_receiver_window.get("replyText") or "").strip() == "NO_REPLY"
+                and duplicate_receiver_window.get("inspectEntryCount") == 1
+                and not any(session_entry_role(entry) == "assistant" for entry in duplicate_after_reply),
+                details={
+                    **summarize_receiver_window(duplicate_receiver_window),
+                    "duplicateGatewayCall": {
+                        "returncode": duplicate_call.returncode,
+                        "stdoutPath": str(duplicate_call.stdout_path),
+                        "stderrPath": str(duplicate_call.stderr_path),
+                        "metaPath": str(duplicate_call.meta_path),
+                    },
+                    "newAssistantEntriesAfterDuplicateReply": [
+                        {
+                            "lineNumber": entry.get("_lineNumber"),
+                            "role": session_entry_role(entry),
+                            "text": session_entry_text(entry),
+                            "toolCalls": session_entry_tool_calls(entry),
+                        }
+                        for entry in duplicate_after_reply
+                        if session_entry_role(entry) == "assistant"
+                    ],
+                },
+            )
+        )
+        scenario["receiverSession"]["duplicateEvent"] = summarize_receiver_window(duplicate_receiver_window)
+        save_json_file(artifact_dir / "receiver-duplicate-window.json", summarize_receiver_window(duplicate_receiver_window))
         save_json_file(summary_path, summary)
 
         attach_result = run_json_command(
