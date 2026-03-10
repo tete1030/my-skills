@@ -571,12 +571,12 @@ def validation_output_path(run_id: str) -> str:
 
 
 def expected_start_text(run_id: str) -> str:
-    return f"start ok {run_id}."
+    return f"start ok {run_id}"
 
 
 
 def expected_continue_text(run_id: str) -> str:
-    return f"continue ok {run_id}."
+    return f"continue ok {run_id}"
 
 
 
