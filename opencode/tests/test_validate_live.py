@@ -104,6 +104,32 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
         self.assertEqual(summary["handoffEnvelope"]["runtimeSignal"]["opencodeSessionId"], "ses_demo_validate_live")
         self.assertEqual(summary["lastStep"]["watchAction"]["operation"], "execute")
 
+    def test_build_manager_argv_omits_runtime_flags_for_registry_only_commands(self):
+        config = {
+            "baseUrl": "http://127.0.0.1:4096",
+            "token": None,
+            "tokenEnv": None,
+        }
+        registry_path = Path("/tmp/registry.json")
+
+        stop_argv = validate_live.build_manager_argv(
+            config,
+            registry_path=registry_path,
+            command="stop-watcher",
+            extra_args=["--watcher-id", "ow_demo"],
+        )
+        inspect_argv = validate_live.build_manager_argv(
+            config,
+            registry_path=registry_path,
+            command="inspect",
+            extra_args=["--opencode-session-id", "ses_demo"],
+        )
+
+        self.assertNotIn("--opencode-base-url", stop_argv)
+        self.assertIn("--registry-path", stop_argv)
+        self.assertIn("--opencode-base-url", inspect_argv)
+        self.assertIn("--registry-path", inspect_argv)
+
     def test_build_verdict_marks_partial_readiness_when_core_checks_exist(self):
         verdict = validate_live.build_verdict(
             [
@@ -112,6 +138,19 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
                 {"name": "inspect_history", "passed": False},
             ],
             preflight_ok=True,
+        )
+
+        self.assertEqual(verdict, "partly_ready")
+
+    def test_build_verdict_never_returns_ready_when_error_present(self):
+        verdict = validate_live.build_verdict(
+            [
+                {"name": "git_preflight", "passed": True},
+                {"name": "start_watcher_live", "passed": True},
+                {"name": "continue_watcher_reuse", "passed": True},
+            ],
+            preflight_ok=True,
+            has_error=True,
         )
 
         self.assertEqual(verdict, "partly_ready")

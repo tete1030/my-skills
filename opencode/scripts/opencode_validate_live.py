@@ -321,15 +321,21 @@ def build_manager_argv(
         sys.executable,
         str(MANAGER),
         command,
-        "--opencode-base-url",
-        str(config["baseUrl"]),
-        "--registry-path",
-        str(registry_path),
     ]
-    if config.get("token"):
-        argv += ["--opencode-token", str(config["token"])]
-    elif config.get("tokenEnv"):
-        argv += ["--opencode-token-env", str(config["tokenEnv"])]
+
+    commands_with_runtime_connection = {"start", "attach", "continue", "list-sessions", "inspect", "inspect-history"}
+    commands_with_registry = {"start", "attach", "continue", "inspect", "inspect-history", "list-watchers", "stop-watcher", "detach"}
+
+    if command in commands_with_runtime_connection:
+        argv += ["--opencode-base-url", str(config["baseUrl"])]
+        if config.get("token"):
+            argv += ["--opencode-token", str(config["token"])]
+        elif config.get("tokenEnv"):
+            argv += ["--opencode-token-env", str(config["tokenEnv"])]
+
+    if command in commands_with_registry:
+        argv += ["--registry-path", str(registry_path)]
+
     if extra_args:
         argv += [str(item) for item in extra_args]
     return argv
@@ -631,12 +637,15 @@ def bool_check(name: str, passed: bool, *, details: dict[str, Any] | None = None
 
 
 
-def build_verdict(checks: list[dict[str, Any]], *, preflight_ok: bool) -> str:
+def build_verdict(checks: list[dict[str, Any]], *, preflight_ok: bool, has_error: bool = False) -> str:
     if not preflight_ok:
         return "failed"
+    core_progress = any(bool(check.get("passed")) for check in checks if check.get("name") in CORE_CHECK_NAMES)
+    if has_error:
+        return "partly_ready" if core_progress else "failed"
     if checks and all(bool(check.get("passed")) for check in checks):
         return "ready"
-    if any(bool(check.get("passed")) for check in checks if check.get("name") in CORE_CHECK_NAMES):
+    if core_progress:
         return "partly_ready"
     return "failed"
 
@@ -666,7 +675,7 @@ def build_continue_prompt(run_id: str) -> str:
 def finalize_summary(summary: dict[str, Any], *, summary_path: Path, checks: list[dict[str, Any]], preflight_ok: bool) -> None:
     summary["checks"] = checks
     summary["finishedAt"] = now_iso()
-    summary["verdict"] = build_verdict(checks, preflight_ok=preflight_ok)
+    summary["verdict"] = build_verdict(checks, preflight_ok=preflight_ok, has_error=bool(summary.get("error")))
     save_json_file(summary_path, summary)
 
 
