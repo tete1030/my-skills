@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from opencode_api_client import OpenCodeClient
 from opencode_delivery_handoff import SYSTEM_EVENT_TEXT_HEADER
 
 SCRIPT_DIR = Path(__file__).resolve().parent
@@ -820,6 +821,73 @@ def scan_recent_history_messages(
 
 
 
+def compact_text_preview(text: str, limit: int = 180) -> str:
+    cleaned = " ".join(text.split())
+    if len(cleaned) <= limit:
+        return cleaned
+    return cleaned[: limit - 1] + "…"
+
+
+
+def fetch_raw_session_messages(config: dict[str, Any], *, session_id: str, workspace: str, limit: int) -> list[dict[str, Any]]:
+    client = OpenCodeClient(str(config["baseUrl"]), token=config.get("token"))
+    data = client.session_messages(session_id, limit=limit, workspace=workspace)
+    return data if isinstance(data, list) else []
+
+
+
+def normalize_raw_session_messages(raw_messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    normalized: list[dict[str, Any]] = []
+    total = len(raw_messages)
+    for index, item in enumerate(raw_messages):
+        if not isinstance(item, dict):
+            continue
+        info = item.get("info") if isinstance(item.get("info"), dict) else {}
+        parts = item.get("parts") if isinstance(item.get("parts"), list) else []
+        role = str(info.get("role") or "").strip().lower()
+        time_info = info.get("time") if isinstance(info.get("time"), dict) else {}
+        completed_at = time_info.get("completed")
+        text_preview = None
+        tool_calls: list[dict[str, Any]] = []
+        for part in parts:
+            if not isinstance(part, dict):
+                continue
+            part_type = str(part.get("type") or "").strip().lower()
+            if part_type == "text" and isinstance(part.get("text"), str) and part.get("text") and text_preview is None:
+                text_preview = compact_text_preview(part["text"])
+            if part_type != "tool":
+                continue
+            state = part.get("state") if isinstance(part.get("state"), dict) else {}
+            input_data = state.get("input") if isinstance(state.get("input"), dict) else {}
+            output = state.get("output") if isinstance(state.get("output"), str) else ""
+            output_lines = output.splitlines() if output else []
+            tool_calls.append(
+                {
+                    "toolName": part.get("tool"),
+                    "toolStatus": state.get("status"),
+                    "action": "shell" if str(part.get("tool") or "").strip().lower() == "bash" else "tool",
+                    "commandPreview": input_data.get("command"),
+                    "content": output,
+                    "outputPreview": compact_text_preview(output) if output else None,
+                    "outputTailLines": output_lines[-10:] if output_lines else None,
+                }
+            )
+        normalized.append(
+            {
+                "messageId": info.get("id"),
+                "recentIndex": total - index - 1,
+                "role": role,
+                "status": "completed" if completed_at else "running",
+                "completedAt": datetime.fromtimestamp(completed_at / 1000, tz=timezone.utc).isoformat() if completed_at else None,
+                "textPreview": text_preview,
+                "toolCallCount": len(tool_calls),
+                "toolCalls": tool_calls,
+            }
+        )
+    return normalized
+
+
+
 def iter_tool_call_output_candidates(tool_call: dict[str, Any]):
     seen: set[tuple[str, str]] = set()
     for key in ("content", "outputPreview", "commandPreview"):
@@ -1330,7 +1398,15 @@ def run_validation(args: argparse.Namespace) -> tuple[dict[str, Any], int]:
         history_messages = history_scan.get("messages") if isinstance(history_scan.get("messages"), list) else []
         latest_history_message = history_messages[0] if history_messages else {}
         latest_tool_calls = latest_history_message.get("toolCalls") if isinstance(latest_history_message.get("toolCalls"), list) else []
-        business_completion = evaluate_workspace_business_completion(run_id, history_messages)
+        raw_history_messages = normalize_raw_session_messages(
+            fetch_raw_session_messages(
+                config,
+                session_id=session_id,
+                workspace=config["workspace"],
+                limit=int(config["historyMessageLimit"]),
+            )
+        )
+        business_completion = evaluate_workspace_business_completion(run_id, raw_history_messages)
         latest_completed_turn = business_completion.get("latestCompletedAssistantTurn") or {}
         final_file_content = business_completion.get("finalFileContent") or {}
         checks.append(

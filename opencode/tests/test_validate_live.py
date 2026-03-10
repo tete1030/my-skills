@@ -294,6 +294,40 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
         self.assertTrue(result["latestCompletedAssistantTurn"]["passed"])
         self.assertFalse(result["finalFileContent"]["passed"])
 
+    def test_normalize_raw_session_messages_preserves_full_bash_output(self):
+        raw_messages = [
+            {
+                "info": {
+                    "id": "msg_raw_1",
+                    "role": "assistant",
+                    "time": {"created": 1, "completed": 2},
+                },
+                "parts": [
+                    {"type": "text", "text": "done"},
+                    {
+                        "type": "tool",
+                        "tool": "bash",
+                        "state": {
+                            "status": "completed",
+                            "input": {"command": "cat .claw-validation/x.txt"},
+                            "output": "start ok x.\ncontinue ok x.\nok\n",
+                        },
+                    },
+                ],
+            }
+        ]
+
+        normalized = validate_live.normalize_raw_session_messages(raw_messages)
+
+        self.assertEqual(len(normalized), 1)
+        self.assertEqual(normalized[0]["role"], "assistant")
+        self.assertEqual(normalized[0]["status"], "completed")
+        self.assertEqual(normalized[0]["toolCalls"][0]["content"], "start ok x.\ncontinue ok x.\nok\n")
+        self.assertEqual(
+            normalized[0]["toolCalls"][0]["outputTailLines"],
+            ["start ok x.", "continue ok x.", "ok"],
+        )
+
 
 if __name__ == "__main__":
     unittest.main()
