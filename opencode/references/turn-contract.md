@@ -172,7 +172,7 @@ Consumption rules:
 
 - The injected payload is **internal runtime context**. The user does **not** see it.
 - Treat the injected payload as a lightweight signal, not as reply text to paraphrase.
-- Read `runtimeSignal` first. If `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do one `inspect` of that `runtimeSignal.opencodeSessionId` and speak from the inspected current state.
+- Read `runtimeSignal` first. If `runtimeSignal.action=inspect_once_current_state`, do one `inspect` of that `runtimeSignal.opencodeSessionId` and speak from the inspected current state.
 - Translate the facts into normal user language; do not restate headers, event tags, JSON, watcher/debug phrasing, or the signal payload itself.
 - Do not mirror every runtime event with a visible chat reply.
 - For the same task cluster, prefer one useful progress update and one final completion/status update.

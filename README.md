@@ -27,11 +27,12 @@ Use the manager entrypoint for the current session/watcher workflow:
 Key points:
 
 - `continue` uses `--follow-up-prompt` and can ensure watcher routing with `--ensure-watcher`.
-- `start` and `continue` return the handoff contract fields `progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, and `userFacingAck`.
+- `start` and `continue` return the slim handoff contract fields `handoffMode`, `agentAction`, and `userFacingAck`.
 - `inspect` now includes a compact `rehydration` block with current-state rebuild data: `currentState`, `latestUserIntent`, `recentCompletedWork`, `recentNotableEvents`, `watcherState`, and `snapshotCoverage` so takeover after compact/reset stays explicit about the observed window.
 - `inspect-history` is the explicit drill-down surface for one recent message: select by `--message-id`, `--recent-index` (`0` = latest), or `--latest` and it returns compact text/tool details including read/write/patch targets when inferable plus shell/stdout tail lines.
 - `attach` now returns the same current-state inspection payload immediately, so attaching to an existing session gives instant takeover context instead of only watcher metadata.
-- When `progressSource=watcher`, the watcher is the progress source and `completionCheckOwner=watcher_runtime_updates` means the current turn should not do the completion check.
+- `agentAction=acknowledge_and_end_turn` means the current manager turn should stop after one acknowledgment.
+- When `handoffMode=watcher_live`, the watcher is now the authoritative future progress source; acknowledge once and end the current turn.
 - `detach` removes the watcher binding without deleting the OpenCode session and returns `detachStatus` (`detached_now`, `already_detached`, `not_found`).
 - Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
 - Manager-facing JSON/config fields keep the naming split explicit:

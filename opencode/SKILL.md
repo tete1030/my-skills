@@ -65,17 +65,15 @@ Key CLI facts that matter in the hot path:
 ### 5) The manager handoff contract is authoritative
 
 After `start` or `continue`, read the returned contract instead of re-deriving behavior from prose.
-The manager result can include:
+The manager result now stays small:
 
-`progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, `userFacingAck`.
+`handoffMode`, `agentAction`, `userFacingAck`.
 
 Hot-path interpretation:
 
-- If `progressSource=watcher`, the watcher now owns progress delivery.
-- If `turnShouldEnd=true`, end the current turn after the user-visible acknowledgment.
-- If `disallowImmediateCompletionCheck=true`, do not do a same-turn completion check.
-- If `completionCheckOwner=watcher_runtime_updates`, completion checking belongs to watcher-driven runtime updates, not this turn.
-- A normal live handoff is `recommendedNextAction=wait_for_runtime_updates` plus `recommendedUserVisibleAction=acknowledge_handoff_then_end_turn`.
+- `agentAction=acknowledge_and_end_turn` means acknowledge once and stop there for this turn.
+- `handoffMode=watcher_live` means the watcher now owns future progress delivery and same-turn completion checks should not be re-added by the agent.
+- `handoffMode=watcher_not_live`, `watcher_missing`, or `no_watcher` mean there is no live watcher handoff; any later status check happens only in a future explicit turn.
 
 This is the main anti-sprawl rule: prefer the manager contract over repeated hand-written polling guidance.
 
@@ -101,8 +99,8 @@ Do not echo raw `systemEvent`, JSON, headers, tags, or watcher wording.
 Use this rule set:
 
 - Read `runtimeSignal` before anything else.
-- Prefer `runtimeSignal.signalKind`, `runtimeSignal.recommendedNextAction`, `runtimeSignal.opencodeSessionId`, `taskCluster`, `status`, `phase`, `reason`, and cadence over old preview text.
-- If `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` for that `opencodeSessionId`, then speak from the inspected current state.
+- Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and `inspect-history`.
+- If `runtimeSignal.action=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` for that `opencodeSessionId`, then speak from the inspected current state.
 - After that one inspect, do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
 - For one task cluster, prefer at most **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
 - Same-state / repeated `completed` / low-value updates should usually stay silent.

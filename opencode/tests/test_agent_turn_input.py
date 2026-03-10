@@ -71,11 +71,8 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(
             result["runtimeSignal"],
             {
-                "signalKind": "progress",
-                "recommendedNextAction": "inspect_once_current_state",
+                "action": "inspect_once_current_state",
                 "opencodeSessionId": "ses_demo_progress",
-                "taskClusterKey": "task-cluster-demo",
-                "reasonCategory": "state_changed",
             },
         )
         self.assertNotIn("message", result)
@@ -106,9 +103,7 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["style"], "brief_heartbeat")
         self.assertEqual(result["mentionFields"], ["status", "phase"])
         self.assertEqual(result["facts"], {"status": "running", "phase": "Waiting for verification"})
-        self.assertEqual(result["runtimeSignal"]["signalKind"], "progress")
-        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
-        self.assertEqual(result["runtimeSignal"]["reasonCategory"], "no_change")
+        self.assertEqual(result["runtimeSignal"]["action"], "inspect_once_current_state")
         self.assertFalse(result["routing"]["mustPreserveOrigin"])
 
     def test_silent_turn_stays_silent_but_preserves_routing(self):
@@ -140,7 +135,7 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["priority"], "low")
         self.assertEqual(result["style"], "silent")
         self.assertEqual(result["facts"], {})
-        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "stay_silent")
+        self.assertEqual(result["runtimeSignal"]["action"], "stay_silent")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
 
     def test_blocked_turn_maps_to_high_priority_blocker_signal(self):
@@ -171,7 +166,7 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["priority"], "high")
         self.assertEqual(result["style"], "brief_blocker")
         self.assertEqual(result["facts"], {"status": "blocked", "phase": "Waiting for approval"})
-        self.assertEqual(result["runtimeSignal"]["signalKind"], "blocked")
+        self.assertEqual(result["runtimeSignal"]["action"], "inspect_once_current_state")
         self.assertEqual(result["runtimeSignal"]["opencodeSessionId"], "ses_demo_blocked")
 
     def test_completed_no_change_stays_completion_signal_not_heartbeat(self):
@@ -201,8 +196,7 @@ class AgentTurnInputTests(unittest.TestCase):
         self.assertEqual(result["updateType"], "completed")
         self.assertEqual(result["style"], "brief_completion")
         self.assertEqual(result["facts"], {"status": "completed"})
-        self.assertEqual(result["runtimeSignal"]["signalKind"], "completed")
-        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
+        self.assertEqual(result["runtimeSignal"]["action"], "inspect_once_current_state")
         self.assertTrue(result["routing"]["mustPreserveOrigin"])
 
     def test_agent_turn_input_schema_stays_inside_boundary(self):

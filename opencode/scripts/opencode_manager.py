@@ -1167,47 +1167,22 @@ def build_agent_handoff_contract(
     watcher_running = watcher_status == "running"
 
     if watcher_running and watch_live:
-        return {
-            "progressSource": "watcher",
-            "agentShouldPoll": False,
-            "recommendedNextAction": "wait_for_runtime_updates",
-            "turnShouldEnd": True,
-            "completionCheckOwner": "watcher_runtime_updates",
-            "disallowImmediateCompletionCheck": True,
-            "recommendedUserVisibleAction": "acknowledge_handoff_then_end_turn",
-            "userFacingAck": WATCHER_HANDOFF_ACK,
-        }
-    if watcher_running:
-        return {
-            "progressSource": "manager_result_only",
-            "agentShouldPoll": False,
-            "recommendedNextAction": "acknowledge_no_live_watcher",
-            "turnShouldEnd": True,
-            "completionCheckOwner": "future_explicit_turn",
-            "disallowImmediateCompletionCheck": False,
-            "recommendedUserVisibleAction": "acknowledge_no_live_watcher",
-            "userFacingAck": NON_LIVE_WATCHER_ACK,
-        }
-    if watcher_requested:
-        return {
-            "progressSource": "manager_result_only",
-            "agentShouldPoll": False,
-            "recommendedNextAction": "acknowledge_missing_watcher",
-            "turnShouldEnd": True,
-            "completionCheckOwner": "future_explicit_turn",
-            "disallowImmediateCompletionCheck": False,
-            "recommendedUserVisibleAction": "acknowledge_missing_watcher",
-            "userFacingAck": MISSING_WATCHER_ACK,
-        }
+        handoff_mode = "watcher_live"
+        user_facing_ack = WATCHER_HANDOFF_ACK
+    elif watcher_running:
+        handoff_mode = "watcher_not_live"
+        user_facing_ack = NON_LIVE_WATCHER_ACK
+    elif watcher_requested:
+        handoff_mode = "watcher_missing"
+        user_facing_ack = MISSING_WATCHER_ACK
+    else:
+        handoff_mode = "no_watcher"
+        user_facing_ack = NO_WATCHER_ACK
+
     return {
-        "progressSource": "manager_result_only",
-        "agentShouldPoll": False,
-        "recommendedNextAction": "acknowledge_async_without_watcher",
-        "turnShouldEnd": True,
-        "completionCheckOwner": "future_explicit_turn",
-        "disallowImmediateCompletionCheck": False,
-        "recommendedUserVisibleAction": "acknowledge_async_without_watcher",
-        "userFacingAck": NO_WATCHER_ACK,
+        "handoffMode": handoff_mode,
+        "agentAction": "acknowledge_and_end_turn",
+        "userFacingAck": user_facing_ack,
     }
 
 

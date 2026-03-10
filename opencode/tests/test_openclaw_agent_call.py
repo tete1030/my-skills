@@ -131,11 +131,8 @@ class OpenClawAgentCallTests(unittest.TestCase):
                     "status": "completed",
                 },
                 "runtimeSignal": {
-                    "signalKind": "completed",
-                    "recommendedNextAction": "inspect_once_current_state",
+                    "action": "inspect_once_current_state",
                     "opencodeSessionId": "ses_release_demo",
-                    "taskClusterKey": "task-cluster-release",
-                    "reasonCategory": "completed",
                 },
                 "taskCluster": {
                     "key": "task-cluster-release",

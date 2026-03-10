@@ -94,11 +94,8 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(
             envelope["agentInput"]["runtimeSignal"],
             {
-                "signalKind": "progress",
-                "recommendedNextAction": "inspect_once_current_state",
+                "action": "inspect_once_current_state",
                 "opencodeSessionId": "ses_release_demo",
-                "taskClusterKey": "task-cluster-release",
-                "reasonCategory": "state_changed",
             },
         )
 
@@ -135,8 +132,7 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["deliveryAction"], "inject")
         self.assertEqual(result["updateType"], "progress")
         self.assertEqual(result["routing"]["originSession"], "origin-session-example")
-        self.assertEqual(result["runtimeSignal"]["signalKind"], "progress")
-        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "inspect_once_current_state")
+        self.assertEqual(result["runtimeSignal"]["action"], "inspect_once_current_state")
         self.assertIsNone(result["runtimeSignal"]["opencodeSessionId"])
 
     def test_origin_session_missing_holds_even_when_origin_target_exists(self):
@@ -227,7 +223,7 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["reason"], "should_not_send")
         self.assertFalse(result["openclawDelivery"]["requiresNarrative"])
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
-        self.assertEqual(result["runtimeSignal"]["recommendedNextAction"], "stay_silent")
+        self.assertEqual(result["runtimeSignal"]["action"], "stay_silent")
 
     def test_delivery_handoff_schema_stays_mechanical(self):
         result = build_delivery_handoff(self.ready_turn())

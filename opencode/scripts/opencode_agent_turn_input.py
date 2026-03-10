@@ -14,7 +14,7 @@ from opencode_task_cluster import (
 
 # Hard boundary for the agent-consumption layer:
 # - allowed: send/skip recommendation, update classification, compact facts, cadence,
-#   explicit lightweight runtime signal metadata, and origin-preserving routing hints;
+#   a tiny runtime wake/inspect token, and origin-preserving routing hints;
 # - caution: expose only fact fields that a live main-session agent may or may not mention;
 # - disallowed: rendered chat text, strategy trees, next-step plans, or rewritten delivery.
 # This adapter exists to prepare agent input, not to become a narrative/strategy engine.
@@ -43,11 +43,8 @@ ALLOWED_CADENCE_KEYS = frozenset({
 })
 ALLOWED_ROUTING_KEYS = frozenset({"originSession", "originTarget", "mustPreserveOrigin"})
 ALLOWED_RUNTIME_SIGNAL_KEYS = frozenset({
-    "signalKind",
-    "recommendedNextAction",
+    "action",
     "opencodeSessionId",
-    "taskClusterKey",
-    "reasonCategory",
 })
 
 DEFAULT_SIGNAL_FACT_FIELDS = ("status", "phase")
@@ -111,65 +108,26 @@ def compact_facts(turn_result, fields: list[str]) -> dict:
     return out
 
 
-def signal_kind_for(update_kind: str) -> str:
-    if update_kind in {"progress", "heartbeat"}:
-        return "progress"
-    if update_kind in {"blocked", "failed", "completed", "silent"}:
-        return update_kind
-    return "progress"
-
-
-def reason_category_for(turn_result: dict, kind: str) -> str:
-    fact = turn_result.get("factSkeleton") or {}
-    cadence = turn_result.get("cadence") or {}
-    reason = str(fact.get("reason") or cadence.get("reason") or "").strip().lower()
-
-    if kind == "blocked":
-        return "blocked"
-    if kind == "failed":
-        return "failed"
-    if kind == "completed":
-        return "completed"
-    if reason.startswith("status="):
-        return "status_changed"
-    if reason == "state_changed":
-        return "state_changed"
-    if "no_change" in reason or cadence.get("noChange"):
-        return "no_change"
-    if reason == "recent_visible_update_exists":
-        return "recent_visible_update_exists"
-    return reason or "unspecified"
-
-
-def build_runtime_signal(turn_result: dict, *, kind: str, task_cluster: dict[str, Any]) -> dict[str, Any]:
+def build_runtime_signal(turn_result: dict) -> dict[str, Any]:
     should_send = bool(turn_result.get("shouldSend"))
-    recommended_next_action = "inspect_once_current_state" if should_send else "stay_silent"
     return {
-        "signalKind": signal_kind_for(kind),
-        "recommendedNextAction": recommended_next_action,
+        "action": "inspect_once_current_state" if should_send else "stay_silent",
         "opencodeSessionId": turn_result.get("opencodeSessionId"),
-        "taskClusterKey": task_cluster.get("key"),
-        "reasonCategory": reason_category_for(turn_result, kind),
     }
 
 
 def normalize_runtime_signal(runtime_signal: Any, *, agent_input: dict | None = None) -> dict[str, Any]:
     base = runtime_signal if isinstance(runtime_signal, dict) else {}
-    task_cluster = normalize_task_cluster((agent_input or {}).get("taskCluster"))
     should_send = bool((agent_input or {}).get("shouldSend"))
     update_kind = str((agent_input or {}).get("updateType") or "progress")
-    recommended_next_action = (
+    action = (
         "inspect_once_current_state"
         if should_send and update_kind != "silent"
         else "stay_silent"
     )
-    reason = str((agent_input or {}).get("reason") or "").strip().lower()
     normalized = {
-        "signalKind": base.get("signalKind") or signal_kind_for(update_kind),
-        "recommendedNextAction": base.get("recommendedNextAction") or recommended_next_action,
+        "action": base.get("action") or base.get("recommendedNextAction") or action,
         "opencodeSessionId": base.get("opencodeSessionId"),
-        "taskClusterKey": base.get("taskClusterKey") or task_cluster.get("key"),
-        "reasonCategory": base.get("reasonCategory") or reason or "unspecified",
     }
     return {
         key: (value if value is not None else None)
@@ -260,7 +218,7 @@ def build_agent_turn_input(turn_result):
         },
         "taskCluster": task_cluster,
         "replyPolicy": dict(DEFAULT_REPLY_POLICY),
-        "runtimeSignal": build_runtime_signal(turn_result, kind=kind, task_cluster=task_cluster),
+        "runtimeSignal": build_runtime_signal(turn_result),
     }
     return assert_agent_input_boundary(agent_input)
 

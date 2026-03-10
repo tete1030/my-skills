@@ -157,8 +157,9 @@ The bridge may forward it as the body of an `openclaw gateway call agent` reques
 Treat the injected payload as an **internal runtime signal**.
 Use it to update your understanding of task state, not as text to parrot back.
 
-- do read `runtimeSignal.signalKind`, `runtimeSignal.recommendedNextAction`, `runtimeSignal.opencodeSessionId`, `taskCluster`, `status`, `phase`, cadence, and routing
-- when `runtimeSignal.recommendedNextAction=inspect_once_current_state`, do one `inspect` of that OpenCode session and speak from the inspected current state
+- do read `runtimeSignal.action` and `runtimeSignal.opencodeSessionId` first; treat them as a wake/inspect token, not as current-state truth
+- get live state from `inspect`, `attach` rehydration, and `inspect-history` when needed; use taskCluster/cadence/routing only as routing and dedupe context here
+- when `runtimeSignal.action=inspect_once_current_state`, do one `inspect` of that OpenCode session and speak from the inspected current state
 - do write any visible reply in natural task-centered language
 - do stay silent when cadence/reason says no visible update is needed
 - do not echo the `OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1` header, raw JSON, transport mechanics, or the signal payload itself

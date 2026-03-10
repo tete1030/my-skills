@@ -30,11 +30,8 @@ AGENT_CALL_KIND = "openclaw_gateway_agent_call_v1"
 STABLE_IDEMPOTENCY_FACT_KEYS = ("status", "phase")
 STABLE_IDEMPOTENCY_ROUTING_KEYS = ("originSession", "originTarget")
 STABLE_IDEMPOTENCY_RUNTIME_SIGNAL_KEYS = (
-    "signalKind",
-    "recommendedNextAction",
+    "action",
     "opencodeSessionId",
-    "taskClusterKey",
-    "reasonCategory",
 )
 STABLE_IDEMPOTENCY_TASK_CLUSTER_KEYS = ("key", "clusterStateRank", "detailRank")
 
@@ -60,7 +57,7 @@ def build_agent_message(system_event_text: str) -> str:
             "keep weaker or older superseded updates internal and do not send another visible reply.\n"
         )
     inspect_guidance = ""
-    if runtime_signal.get("recommendedNextAction") == "inspect_once_current_state":
+    if runtime_signal.get("action") == "inspect_once_current_state":
         session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
         inspect_guidance = (
             "Treat the payload below as a lightweight runtime signal, not as reply content to paraphrase.\n"

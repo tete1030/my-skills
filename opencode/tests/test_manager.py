@@ -116,13 +116,8 @@ class OpenCodeManagerTests(unittest.TestCase):
             watcher_requested=True,
         )
 
-        self.assertEqual(contract["progressSource"], "watcher")
-        self.assertFalse(contract["agentShouldPoll"])
-        self.assertEqual(contract["recommendedNextAction"], "wait_for_runtime_updates")
-        self.assertTrue(contract["turnShouldEnd"])
-        self.assertEqual(contract["completionCheckOwner"], "watcher_runtime_updates")
-        self.assertTrue(contract["disallowImmediateCompletionCheck"])
-        self.assertEqual(contract["recommendedUserVisibleAction"], "acknowledge_handoff_then_end_turn")
+        self.assertEqual(contract["handoffMode"], "watcher_live")
+        self.assertEqual(contract["agentAction"], "acknowledge_and_end_turn")
         self.assertIn("OpenCode", contract["userFacingAck"])
         self.assertIn("OpenClaw", contract["userFacingAck"])
 
@@ -132,13 +127,19 @@ class OpenCodeManagerTests(unittest.TestCase):
             watcher_requested=True,
         )
 
-        self.assertEqual(contract["progressSource"], "manager_result_only")
-        self.assertFalse(contract["agentShouldPoll"])
-        self.assertEqual(contract["recommendedNextAction"], "acknowledge_no_live_watcher")
-        self.assertTrue(contract["turnShouldEnd"])
-        self.assertEqual(contract["completionCheckOwner"], "future_explicit_turn")
-        self.assertFalse(contract["disallowImmediateCompletionCheck"])
-        self.assertEqual(contract["recommendedUserVisibleAction"], "acknowledge_no_live_watcher")
+        self.assertEqual(contract["handoffMode"], "watcher_not_live")
+        self.assertEqual(contract["agentAction"], "acknowledge_and_end_turn")
+        self.assertIn("OpenCode", contract["userFacingAck"])
+        self.assertIn("OpenClaw", contract["userFacingAck"])
+
+    def test_build_agent_handoff_contract_marks_requested_but_missing_watcher(self):
+        contract = build_agent_handoff_contract(
+            watcher_entry=None,
+            watcher_requested=True,
+        )
+
+        self.assertEqual(contract["handoffMode"], "watcher_missing")
+        self.assertEqual(contract["agentAction"], "acknowledge_and_end_turn")
         self.assertIn("OpenCode", contract["userFacingAck"])
         self.assertIn("OpenClaw", contract["userFacingAck"])
 
@@ -315,13 +316,8 @@ class OpenCodeManagerTests(unittest.TestCase):
             ):
                 result = start_command(args)
 
-            self.assertEqual(result["progressSource"], "watcher")
-            self.assertFalse(result["agentShouldPoll"])
-            self.assertEqual(result["recommendedNextAction"], "wait_for_runtime_updates")
-            self.assertTrue(result["turnShouldEnd"])
-            self.assertEqual(result["completionCheckOwner"], "watcher_runtime_updates")
-            self.assertTrue(result["disallowImmediateCompletionCheck"])
-            self.assertEqual(result["recommendedUserVisibleAction"], "acknowledge_handoff_then_end_turn")
+            self.assertEqual(result["handoffMode"], "watcher_live")
+            self.assertEqual(result["agentAction"], "acknowledge_and_end_turn")
             self.assertIn("OpenCode", result["userFacingAck"])
             self.assertIn("OpenClaw", result["userFacingAck"])
             fake_client.prompt_session.assert_called_once()
@@ -707,13 +703,8 @@ class OpenCodeManagerTests(unittest.TestCase):
             mocked_start.assert_called_once()
             self.assertEqual(mocked_start.call_args.kwargs["openclaw_session_key"], "agent:main:telegram:group:-100123:topic:42")
             self.assertEqual(result["watcher"]["watcherId"], "ow_new")
-            self.assertEqual(result["progressSource"], "watcher")
-            self.assertFalse(result["agentShouldPoll"])
-            self.assertEqual(result["recommendedNextAction"], "wait_for_runtime_updates")
-            self.assertTrue(result["turnShouldEnd"])
-            self.assertEqual(result["completionCheckOwner"], "watcher_runtime_updates")
-            self.assertTrue(result["disallowImmediateCompletionCheck"])
-            self.assertEqual(result["recommendedUserVisibleAction"], "acknowledge_handoff_then_end_turn")
+            self.assertEqual(result["handoffMode"], "watcher_live")
+            self.assertEqual(result["agentAction"], "acknowledge_and_end_turn")
             self.assertIn("OpenCode", result["userFacingAck"])
             self.assertIn("OpenClaw", result["userFacingAck"])
             fake_client.prompt_session.assert_called_once()
@@ -748,13 +739,8 @@ class OpenCodeManagerTests(unittest.TestCase):
             ):
                 result = continue_command(args)
 
-            self.assertEqual(result["progressSource"], "manager_result_only")
-            self.assertFalse(result["agentShouldPoll"])
-            self.assertEqual(result["recommendedNextAction"], "acknowledge_async_without_watcher")
-            self.assertTrue(result["turnShouldEnd"])
-            self.assertEqual(result["completionCheckOwner"], "future_explicit_turn")
-            self.assertFalse(result["disallowImmediateCompletionCheck"])
-            self.assertEqual(result["recommendedUserVisibleAction"], "acknowledge_async_without_watcher")
+            self.assertEqual(result["handoffMode"], "no_watcher")
+            self.assertEqual(result["agentAction"], "acknowledge_and_end_turn")
             self.assertIn("OpenCode", result["userFacingAck"])
             self.assertIn("OpenClaw", result["userFacingAck"])
             self.assertNotIn("watcher", result)
@@ -963,20 +949,18 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--follow-up-prompt", readme)
         self.assertIn("--ensure-watcher", readme)
         self.assertIn("inspect-history", readme)
-        self.assertIn("progressSource", readme)
-        self.assertIn("agentShouldPoll", readme)
-        self.assertIn("turnShouldEnd", readme)
-        self.assertIn("completionCheckOwner", readme)
-        self.assertIn("disallowImmediateCompletionCheck", readme)
+        self.assertIn("handoffMode", readme)
+        self.assertIn("agentAction", readme)
+        self.assertIn("watcher_live", readme)
+        self.assertIn("acknowledge_and_end_turn", readme)
 
     def test_skill_mentions_manager_handoff_contract(self):
         skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("inspect-history", skill)
-        self.assertIn("progressSource", skill)
-        self.assertIn("agentShouldPoll", skill)
-        self.assertIn("turnShouldEnd", skill)
-        self.assertIn("completionCheckOwner", skill)
-        self.assertIn("wait_for_runtime_updates", skill)
+        self.assertIn("handoffMode", skill)
+        self.assertIn("agentAction", skill)
+        self.assertIn("watcher_live", skill)
+        self.assertIn("acknowledge_and_end_turn", skill)
         self.assertIn("preflight that path on the current host", skill)
 
 
