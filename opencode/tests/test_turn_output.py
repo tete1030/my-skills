@@ -1,3 +1,4 @@
+import copy
 import sys
 import unittest
 from pathlib import Path
@@ -107,6 +108,71 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(set(result["taskCluster"]), ALLOWED_TASK_CLUSTER_KEYS)
         for forbidden_key in ["control", "message", "summary", "headline", "plan", "strategy"]:
             self.assertNotIn(forbidden_key, result)
+
+    def test_completed_task_cluster_ignores_tool_only_preview_churn_until_final_text(self):
+        payload = {
+            "decision": {"decision": "visible_update", "reason": "status=completed"},
+            "observation": {"status": "completed", "phase": None, "noChange": False, "lastUpdatedMs": 123456789},
+            "after": {
+                "status": "completed",
+                "phase": None,
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "snapshot": {
+                "latestUserInputSummary": "Create or overwrite the file step2.txt",
+                "accumulatedEventSummary": "user: Create or overwrite the file step2.txt | read: /mnt/vault/test-opencode-skill/step2.txt",
+                "latestMessage": {
+                    "id": "msg_read",
+                    "role": "assistant",
+                    "status": "completed",
+                },
+            },
+        }
+
+        read_only = build_turn_result(payload)
+        self.assertIn("read:", read_only["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertEqual(read_only["taskCluster"]["detailRank"], 0)
+
+        prune_payload = copy.deepcopy(payload)
+        prune_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | prune: → apply_patch: step1.txt | → read: step1.txt"
+        )
+        prune_payload["snapshot"]["latestMessage"]["id"] = "msg_prune"
+        prune_only = build_turn_result(prune_payload)
+        self.assertIn("prune:", prune_only["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertEqual(prune_only["taskCluster"]["detailRank"], 0)
+
+        mid_text_payload = copy.deepcopy(payload)
+        mid_text_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | text: Wrote the file; verifying now."
+        )
+        mid_text_payload["snapshot"]["latestMessage"] = {
+            "id": "msg_text",
+            "role": "assistant",
+            "status": "completed",
+            "message.lastTextPreview": "Wrote the file; verifying now.",
+            "textPreview": "Wrote the file; verifying now.",
+        }
+        mid_text = build_turn_result(mid_text_payload)
+        self.assertEqual(mid_text["taskCluster"]["detailRank"], 0)
+
+        final_payload = copy.deepcopy(payload)
+        final_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | text: Done and verified."
+        )
+        final_payload["snapshot"]["latestMessage"] = {
+            "id": "msg_done",
+            "role": "assistant",
+            "status": "completed",
+            "type": "step-finish",
+            "finish": "stop",
+            "message.stopReason": "stop",
+            "message.lastTextPreview": "Done and verified.",
+            "textPreview": "Done and verified.",
+        }
+        final_text = build_turn_result(final_payload)
+        self.assertEqual(final_text["taskCluster"]["detailRank"], len("Done and verified."))
 
     def test_turn_payload_is_debug_only(self):
         payload = {

@@ -7,6 +7,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_delivery_handoff import build_delivery_handoff  # noqa: E402
+from opencode_session_turn import build_turn_result  # noqa: E402
 from opencode_openclaw_agent_call import (  # noqa: E402
     AGENT_CALL_KIND,
     build_gateway_agent_call,
@@ -157,6 +158,93 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertNotEqual(
             first_plan["gatewayParams"]["idempotencyKey"],
             second_plan["gatewayParams"]["idempotencyKey"],
+        )
+
+    def test_completed_tool_only_preview_churn_keeps_same_idempotency_until_final_text(self):
+        def turn_from_payload(payload):
+            return build_turn_result(
+                payload,
+                origin_session="agent:main:telegram:group:-100123:topic:42",
+                origin_target="telegram:-100123:topic:42",
+                session_id="ses_release_demo",
+            )
+
+        base_payload = {
+            "decision": {"decision": "visible_update", "reason": "status=completed"},
+            "observation": {"status": "completed", "phase": None, "noChange": False, "lastUpdatedMs": 123456789},
+            "after": {
+                "status": "completed",
+                "phase": None,
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+            },
+            "snapshot": {
+                "latestUserInputSummary": "Create or overwrite the file step2.txt",
+                "accumulatedEventSummary": "user: Create or overwrite the file step2.txt | read: /mnt/vault/test-opencode-skill/step2.txt",
+                "latestMessage": {
+                    "id": "msg_read",
+                    "role": "assistant",
+                    "status": "completed",
+                },
+            },
+        }
+
+        read_turn = turn_from_payload(base_payload)
+        prune_payload = json.loads(json.dumps(base_payload))
+        prune_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | prune: → apply_patch: step1.txt | → read: step1.txt"
+        )
+        prune_payload["snapshot"]["latestMessage"]["id"] = "msg_prune"
+        prune_turn = turn_from_payload(prune_payload)
+
+        mid_text_payload = json.loads(json.dumps(base_payload))
+        mid_text_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | text: Wrote the file; verifying now."
+        )
+        mid_text_payload["snapshot"]["latestMessage"] = {
+            "id": "msg_text",
+            "role": "assistant",
+            "status": "completed",
+            "message.lastTextPreview": "Wrote the file; verifying now.",
+            "textPreview": "Wrote the file; verifying now.",
+        }
+        mid_text_turn = turn_from_payload(mid_text_payload)
+
+        final_payload = json.loads(json.dumps(base_payload))
+        final_payload["snapshot"]["accumulatedEventSummary"] = (
+            "user: Create or overwrite the file step2.txt | text: Done and verified."
+        )
+        final_payload["snapshot"]["latestMessage"] = {
+            "id": "msg_done",
+            "role": "assistant",
+            "status": "completed",
+            "type": "step-finish",
+            "finish": "stop",
+            "message.stopReason": "stop",
+            "message.lastTextPreview": "Done and verified.",
+            "textPreview": "Done and verified.",
+        }
+        final_turn = turn_from_payload(final_payload)
+
+        read_plan = build_gateway_agent_call(self.ready_handoff(turn=read_turn))
+        prune_plan = build_gateway_agent_call(self.ready_handoff(turn=prune_turn))
+        mid_text_plan = build_gateway_agent_call(self.ready_handoff(turn=mid_text_turn))
+        final_plan = build_gateway_agent_call(self.ready_handoff(turn=final_turn))
+
+        self.assertEqual(read_turn["taskCluster"]["detailRank"], 0)
+        self.assertEqual(prune_turn["taskCluster"]["detailRank"], 0)
+        self.assertEqual(mid_text_turn["taskCluster"]["detailRank"], 0)
+        self.assertEqual(
+            read_plan["gatewayParams"]["idempotencyKey"],
+            prune_plan["gatewayParams"]["idempotencyKey"],
+        )
+        self.assertEqual(
+            read_plan["gatewayParams"]["idempotencyKey"],
+            mid_text_plan["gatewayParams"]["idempotencyKey"],
+        )
+        self.assertNotEqual(
+            read_plan["gatewayParams"]["idempotencyKey"],
+            final_plan["gatewayParams"]["idempotencyKey"],
         )
 
     def test_non_ready_handoff_stays_dry_run_without_command(self):

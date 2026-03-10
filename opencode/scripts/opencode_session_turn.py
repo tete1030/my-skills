@@ -26,6 +26,7 @@ ALLOWED_CADENCE_KEYS = frozenset({
     "consecutiveNoChangeCount",
     "lastVisibleUpdateAt",
 })
+TERMINAL_TASK_CLUSTER_STATUSES = frozenset({"completed", "failed", "blocked", "deviated", "stalled"})
 
 
 def run_capture(script_name: str, args: list[str]) -> str:
@@ -60,6 +61,34 @@ def latest_meaningful_preview(payload):
     return short(preview)
 
 
+def latest_assistant_message_text_preview(snapshot):
+    latest = snapshot.get("latestMessage") or {}
+    latest_role = latest.get("role") or latest.get("message.role")
+    if latest_role != "assistant":
+        return None
+    terminal_marker = (
+        latest.get("message.stopReason")
+        or latest.get("finish")
+        or ("step-finish" if latest.get("type") == "step-finish" else None)
+    )
+    if not terminal_marker:
+        return None
+    return short(
+        latest.get("message.lastTextPreview")
+        or latest.get("textPreview")
+    )
+
+
+def task_cluster_preview(payload):
+    snapshot = payload.get("snapshot") or {}
+    observation = payload.get("observation") or {}
+    after = payload.get("after") or {}
+    status = str(observation.get("status") or after.get("status") or "").strip().lower()
+    if status in TERMINAL_TASK_CLUSTER_STATUSES:
+        return latest_assistant_message_text_preview(snapshot)
+    return latest_meaningful_preview(payload)
+
+
 def build_fact_skeleton(payload):
     observation = payload.get("observation") or {}
     after = payload.get("after") or {}
@@ -91,7 +120,7 @@ def build_task_cluster_payload(payload):
     status = observation.get("status") or after.get("status") or "unknown"
     return build_task_cluster(
         snapshot.get("latestUserInputSummary"),
-        latest_meaningful_preview(payload),
+        task_cluster_preview(payload),
         status=status,
         source_update_ms=observation.get("lastUpdatedMs") or after.get("lastUpdatedMs"),
     )
