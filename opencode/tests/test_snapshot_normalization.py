@@ -200,6 +200,16 @@ class SnapshotNormalizationTests(unittest.TestCase):
         self.assertEqual(summary["latestAssistantTextPreviewMessageId"], "msg_cbe3a7527001cZT0WrLUPWnamr")
         self.assertIn("Released v0.3.4 successfully", summary["latestAssistantTextPreview"])
 
+    def test_recent_message_summary_exposes_window_metadata(self):
+        summary = summarize_recent_messages([USER_TEXT_MESSAGE, ASSISTANT_STOP_TEXT_MESSAGE, TOOL_ONLY_COMPLETED_MESSAGE])
+
+        self.assertEqual(summary["messageWindow"]["observedMessageCount"], 3)
+        self.assertEqual(summary["messageWindow"]["oldestMessageId"], "msg_user_latest")
+        self.assertEqual(summary["messageWindow"]["oldestMessageRole"], "user")
+        self.assertEqual(summary["messageWindow"]["newestMessageId"], "msg_cc945b9ef00294qavn782M9jhG")
+        self.assertEqual(summary["messageWindow"]["newestMessageRole"], "assistant")
+        self.assertEqual(summary["messageWindowSize"], 3)
+
     def test_user_input_is_included_in_accumulated_event_summary(self):
         summary = summarize_recent_messages([
             USER_TEXT_MESSAGE,

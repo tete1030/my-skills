@@ -10,6 +10,7 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_manager import (  # noqa: E402
+    attach_command,
     build_agent_handoff_contract,
     build_manager_watcher_config,
     build_parser,
@@ -17,6 +18,7 @@ from opencode_manager import (  # noqa: E402
     continue_command,
     create_watcher_entry,
     detach_command,
+    inspect_command,
     list_watchers_command,
     refresh_registry_entry,
     save_json_object,
@@ -322,6 +324,180 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIn("OpenCode", result["userFacingAck"])
             self.assertIn("OpenClaw", result["userFacingAck"])
             fake_client.prompt_session.assert_called_once()
+
+    def test_inspect_command_returns_rehydration_block_with_window_coverage(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {
+                    "id": "msg_latest",
+                    "role": "assistant",
+                    "created": 1772718033111,
+                    "status": "completed",
+                    "message.lastTextPreview": "Patched manager inspect output.",
+                },
+                "latestTextPreview": "Patched manager inspect output.",
+                "latestAssistantTextPreview": "Patched manager inspect output.",
+                "latestUserInputSummary": "Please continue and summarize the current state.",
+                "latestUserInputMessageId": "msg_user_latest",
+                "accumulatedEventSummary": "user: Please continue and summarize the current state. | prune: Context compacted | text: Patched manager inspect output.",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_user_latest", "summary": "Please continue and summarize the current state.", "created": 1772718028071},
+                    {"kind": "prune", "messageId": "msg_prune", "summary": "Context compacted", "created": 1772718029071},
+                    {"kind": "text", "messageId": "msg_latest", "summary": "Patched manager inspect output.", "created": 1772718033111},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 4,
+                    "oldestMessageId": "msg_user_oldest",
+                    "oldestMessageRole": "user",
+                    "oldestMessageCreated": 1772718027000,
+                    "newestMessageId": "msg_latest",
+                    "newestMessageRole": "assistant",
+                    "newestMessageCreated": 1772718033111,
+                },
+                "messageWindowSize": 4,
+                "messageWindowLimit": 4,
+                "todo": {
+                    "items": [
+                        {"content": "Collect current state", "status": "completed"},
+                        {"content": "Return takeover summary", "status": "completed"},
+                    ],
+                    "phase": "Return takeover summary",
+                    "hasPendingWork": False,
+                    "allCompleted": True,
+                },
+                "permission": [],
+                "question": [],
+                "errors": {},
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = inspect_command(args)
+
+            inspection = result["inspection"]
+            self.assertEqual(inspection["currentStatus"], "completed")
+            self.assertEqual(inspection["latestUserInputSummary"], "Please continue and summarize the current state.")
+            self.assertEqual(inspection["completedWork"], ["Collect current state", "Return takeover summary"])
+
+            rehydration = inspection["rehydration"]
+            self.assertEqual(rehydration["purpose"], "current_state_rebuild")
+            self.assertEqual(rehydration["snapshotCoverage"]["requestedMessageLimit"], 4)
+            self.assertEqual(rehydration["snapshotCoverage"]["observedMessageCount"], 4)
+            self.assertTrue(rehydration["snapshotCoverage"]["mayExcludeOlderHistory"])
+            self.assertEqual(rehydration["latestUserIntent"], "Please continue and summarize the current state.")
+            self.assertEqual(rehydration["recentCompletedWork"][-1]["summary"], "Patched manager inspect output.")
+            self.assertEqual(rehydration["recentNotableEvents"][1]["label"], "prune")
+            self.assertEqual(rehydration["watcherState"]["watcherStatus"], "running")
+            self.assertEqual(rehydration["watcherState"]["watcherId"], "ow_demo123")
+
+    def test_attach_command_returns_immediate_inspection_for_takeover(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
+                openclaw_delivery_target="telegram:-100123:topic:42",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                watch_message_limit=3,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "watchProcessAlive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "lastWatchRunAt": "2026-03-10T05:00:00+00:00",
+                "lastWatchOperation": "plan",
+            }
+            snapshot = {
+                "latestMessage": {
+                    "id": "msg_user_latest",
+                    "role": "user",
+                    "created": 1772718034000,
+                    "status": "running",
+                },
+                "latestTextPreview": "Need a quick takeover summary.",
+                "latestAssistantTextPreview": "Earlier work completed successfully.",
+                "latestUserInputSummary": "Need a quick takeover summary.",
+                "latestUserInputMessageId": "msg_user_latest",
+                "accumulatedEventSummary": "text: Earlier work completed successfully. | user: Need a quick takeover summary.",
+                "eventLedger": [
+                    {"kind": "text", "messageId": "msg_prev", "summary": "Earlier work completed successfully.", "created": 1772718033000},
+                    {"kind": "user_input", "messageId": "msg_user_latest", "summary": "Need a quick takeover summary.", "created": 1772718034000},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 2,
+                    "oldestMessageId": "msg_prev",
+                    "oldestMessageRole": "assistant",
+                    "oldestMessageCreated": 1772718033000,
+                    "newestMessageId": "msg_user_latest",
+                    "newestMessageRole": "user",
+                    "newestMessageCreated": 1772718034000,
+                },
+                "messageWindowSize": 2,
+                "messageWindowLimit": 3,
+                "todo": {
+                    "items": [
+                        {"content": "Earlier work completed successfully", "status": "completed"},
+                        {"content": "Answer the latest user request", "status": "pending"},
+                    ],
+                    "phase": "Answer the latest user request",
+                    "hasPendingWork": True,
+                    "allCompleted": False,
+                },
+                "permission": [],
+                "question": [],
+                "errors": {},
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = attach_command(args)
+
+            self.assertEqual(result["watcher"]["watcherId"], "ow_new")
+            self.assertIn("inspection", result)
+            inspection = result["inspection"]
+            self.assertEqual(inspection["currentStatus"], "running")
+            self.assertEqual(inspection["currentPhase"], "Answer the latest user request")
+            self.assertEqual(inspection["rehydration"]["snapshotCoverage"]["requestedMessageLimit"], 3)
+            self.assertEqual(inspection["rehydration"]["latestUserIntent"], "Need a quick takeover summary.")
+            self.assertEqual(inspection["rehydration"]["watcherState"]["watcherId"], "ow_new")
 
     def test_continue_command_can_ensure_watcher_using_previous_binding(self):
         with tempfile.TemporaryDirectory() as tmpdir:

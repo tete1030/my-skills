@@ -549,6 +549,21 @@ def summarize_event_ledger(events: List[Dict[str, Any]], limit: int = EVENT_SUMM
 
 
 
+def summarize_message_window(normalized_messages: List[Dict[str, Any]]) -> Dict[str, Any]:
+    oldest = normalized_messages[0] if normalized_messages else {}
+    newest = normalized_messages[-1] if normalized_messages else {}
+    return {
+        "observedMessageCount": len(normalized_messages),
+        "oldestMessageId": oldest.get("id"),
+        "oldestMessageRole": oldest.get("role"),
+        "oldestMessageCreated": oldest.get("created"),
+        "newestMessageId": newest.get("id"),
+        "newestMessageRole": newest.get("role"),
+        "newestMessageCreated": newest.get("created"),
+    }
+
+
+
 def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
     message_list = messages if isinstance(messages, list) else ([messages] if messages is not None else [])
     normalized_messages = [compact_latest_message(message) for message in message_list]
@@ -599,6 +614,7 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
     event_ledger = collapse_events([event for events in per_message_events for event in events])[-EVENT_LEDGER_MAX:]
     accumulated_event_summary = summarize_event_ledger(event_ledger)
     latest_user_input = next((event for event in reversed(event_ledger) if event.get("kind") == "user_input" and not event.get("ignored")), None)
+    message_window = summarize_message_window(normalized_messages)
 
     return {
         "latestMessage": latest,
@@ -612,7 +628,8 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
         "latestUserInputMessageId": latest_user_input.get("messageId") if latest_user_input else None,
         "accumulatedEventSummary": accumulated_event_summary,
         "eventLedger": event_ledger or None,
-        "messageWindowSize": len(normalized_messages),
+        "messageWindow": message_window,
+        "messageWindowSize": message_window["observedMessageCount"],
     }
 
 
@@ -648,7 +665,9 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
         "latestUserInputMessageId": message_summary.get("latestUserInputMessageId"),
         "accumulatedEventSummary": message_summary.get("accumulatedEventSummary"),
         "eventLedger": message_summary.get("eventLedger"),
+        "messageWindow": message_summary.get("messageWindow"),
         "messageWindowSize": message_summary.get("messageWindowSize"),
+        "messageWindowLimit": message_limit,
         "todo": normalize_todo(todo),
         "status": status,
         "permission": permission,

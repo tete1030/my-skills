@@ -47,9 +47,9 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 
 - Fresh work in a workspace -> `start`
 - Need to find an existing session first -> `list-sessions`
-- Need current state of one existing session -> `inspect`
+- Need current state of one existing session -> `inspect` (now returns a compact `rehydration` block for takeover/current-state rebuild)
 - Need to send more work into an existing session -> `continue`
-- Need watcher routing back to this OpenClaw session -> `attach` or `continue --ensure-watcher`
+- Need watcher routing back to this OpenClaw session -> `attach` or `continue --ensure-watcher` (`attach` now also returns the same immediate inspection/rehydration payload)
 - Need to see watcher bindings -> `list-watchers`
 - Need to stop monitoring only -> `stop-watcher`
 - Need to remove the OpenClaw binding -> `detach`

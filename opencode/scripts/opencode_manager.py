@@ -478,11 +478,185 @@ def build_session_summary(session_data: dict[str, Any], *, watcher_entry: dict[s
 
 
 
+def value_non_empty(value: Any) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, (list, tuple, dict, str, bytes)):
+        return len(value) > 0
+    return True
+
+
+
+def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str, Any], todo: dict[str, Any]) -> str:
+    if value_non_empty(snapshot.get("permission")) or value_non_empty(snapshot.get("question")):
+        return "blocked"
+
+    raw_status = str(latest_message.get("status") or snapshot.get("status") or "").strip().lower()
+    if raw_status in {"failed", "error", "cancelled", "canceled"}:
+        return "failed"
+    if todo.get("hasPendingWork"):
+        return "running"
+    if str(latest_message.get("role") or "").strip().lower() == "user":
+        return "running"
+    if raw_status:
+        return raw_status
+    if todo.get("allCompleted"):
+        return "completed"
+    return "unknown"
+
+
+
+def build_recent_event_label(event: dict[str, Any]) -> str:
+    kind = event.get("kind")
+    if kind == "tool" and event.get("toolName"):
+        return f"tool[{event['toolName']}]"
+    return {
+        "user_input": "user",
+        "text": "text",
+        "read": "read",
+        "prune": "prune",
+        "tool": "tool",
+    }.get(kind, kind or "event")
+
+
+
+def build_recent_notable_events(snapshot: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]] | None:
+    events = snapshot.get("eventLedger") if isinstance(snapshot.get("eventLedger"), list) else []
+    visible = [event for event in events if isinstance(event, dict) and not event.get("ignored")]
+    if not visible:
+        return None
+
+    notable = []
+    for event in visible[-limit:]:
+        summary = preview_text(event.get("summary"), limit=120)
+        if not summary:
+            continue
+        item = {
+            "kind": event.get("kind"),
+            "label": build_recent_event_label(event),
+            "summary": summary,
+            "messageId": event.get("messageId"),
+            "createdAt": iso_from_epoch_ms(event.get("created")),
+        }
+        notable.append({key: value for key, value in item.items() if value is not None})
+    return notable or None
+
+
+
+def build_recent_completed_work(snapshot: dict[str, Any], todo: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]] | None:
+    completed: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_item(source: str, summary: Any, **extra: Any) -> None:
+        normalized = preview_text(summary, limit=140)
+        if not normalized:
+            return
+        signature = (source, normalized)
+        if signature in seen:
+            return
+        seen.add(signature)
+        item = {"source": source, "summary": normalized, **extra}
+        completed.append({key: value for key, value in item.items() if value is not None})
+
+    for item in (todo.get("items") or [])[-limit:]:
+        if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "completed":
+            append_item("todo", item.get("content"))
+
+    completed_tool_statuses = {"completed", "done", "finished", "succeeded", "success", "ok"}
+    events = snapshot.get("eventLedger") if isinstance(snapshot.get("eventLedger"), list) else []
+    for event in events:
+        if not isinstance(event, dict) or event.get("ignored"):
+            continue
+        kind = event.get("kind")
+        if kind in {"user_input", "read", "prune"}:
+            continue
+        if kind == "tool":
+            tool_status = str(event.get("toolStatus") or "").strip().lower()
+            if tool_status and tool_status not in completed_tool_statuses:
+                continue
+            summary_text = str(event.get("summary") or "").strip().lower()
+            if summary_text in completed_tool_statuses:
+                continue
+        append_item(
+            "event",
+            event.get("summary"),
+            kind=kind,
+            label=build_recent_event_label(event),
+            messageId=event.get("messageId"),
+            createdAt=iso_from_epoch_ms(event.get("created")),
+        )
+
+    return completed[-limit:] or None
+
+
+
+def build_snapshot_coverage(snapshot: dict[str, Any], *, requested_message_limit: int | None) -> dict[str, Any]:
+    message_window = snapshot.get("messageWindow") if isinstance(snapshot.get("messageWindow"), dict) else {}
+    observed_count = message_window.get("observedMessageCount")
+    if not isinstance(observed_count, int):
+        observed_count = snapshot.get("messageWindowSize") if isinstance(snapshot.get("messageWindowSize"), int) else 0
+    newest_message = snapshot.get("latestMessage") if isinstance(snapshot.get("latestMessage"), dict) else {}
+
+    coverage = {
+        "coverageMode": "recent_window_current_state_rebuild",
+        "requestedMessageLimit": requested_message_limit,
+        "observedMessageCount": observed_count,
+        "eventCount": len(snapshot.get("eventLedger") or []),
+        "mayExcludeOlderHistory": bool(requested_message_limit and observed_count >= requested_message_limit),
+        "oldestObservedMessage": {
+            key: value
+            for key, value in {
+                "messageId": message_window.get("oldestMessageId"),
+                "role": message_window.get("oldestMessageRole"),
+                "createdAt": iso_from_epoch_ms(message_window.get("oldestMessageCreated")),
+            }.items()
+            if value is not None
+        }
+        or None,
+        "newestObservedMessage": {
+            key: value
+            for key, value in {
+                "messageId": message_window.get("newestMessageId") or newest_message.get("id"),
+                "role": message_window.get("newestMessageRole") or newest_message.get("role"),
+                "createdAt": iso_from_epoch_ms(message_window.get("newestMessageCreated") or newest_message.get("created")),
+            }.items()
+            if value is not None
+        }
+        or None,
+        "latestUserInputMessageId": snapshot.get("latestUserInputMessageId"),
+    }
+    return {key: value for key, value in coverage.items() if value is not None}
+
+
+
+def build_rehydration_watcher_state(watcher_entry: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not watcher_entry:
+        return None
+    return {
+        key: value
+        for key, value in {
+            "watcherId": watcher_entry.get("watcherId"),
+            "watcherStatus": watcher_entry.get("watcherStatus"),
+            "watchLive": watcher_entry.get("watchLive"),
+            "watchProcessAlive": watcher_entry.get("watchProcessAlive"),
+            "lastWatchRunAt": watcher_entry.get("lastWatchRunAt"),
+            "lastWatchOperation": watcher_entry.get("lastWatchOperation"),
+            "lastOpencodeStatus": watcher_entry.get("lastOpencodeStatus"),
+            "lastOpencodePhase": watcher_entry.get("lastOpencodePhase"),
+            "lastPreview": watcher_entry.get("lastPreview"),
+            "watchExitReason": watcher_entry.get("watchExitReason"),
+        }.items()
+        if value is not None
+    }
+
+
+
 def build_inspection(
     session_data: dict[str, Any],
     snapshot: dict[str, Any],
     *,
     watcher_entry: dict[str, Any] | None = None,
+    requested_message_limit: int | None = None,
 ) -> dict[str, Any]:
     todo = snapshot.get("todo") if isinstance(snapshot.get("todo"), dict) else {}
     latest_message = snapshot.get("latestMessage") if isinstance(snapshot.get("latestMessage"), dict) else {}
@@ -491,19 +665,45 @@ def build_inspection(
         if isinstance(item, dict) and item.get("status") == "completed":
             completed_work.append(item.get("content"))
 
+    current_status = derive_inspection_status(snapshot, latest_message, todo)
+    latest_meaningful_preview = snapshot.get("latestTextPreview") or snapshot.get("latestAssistantTextPreview")
+    rehydration = {
+        "version": "v1",
+        "purpose": "current_state_rebuild",
+        "snapshotCoverage": build_snapshot_coverage(snapshot, requested_message_limit=requested_message_limit),
+        "currentState": {
+            key: value
+            for key, value in {
+                "status": current_status,
+                "phase": todo.get("phase"),
+                "latestMeaningfulPreview": latest_meaningful_preview,
+                "hasPendingWork": todo.get("hasPendingWork"),
+                "allTodosCompleted": todo.get("allCompleted"),
+                "pendingPermissionCount": len(snapshot.get("permission") or []) if isinstance(snapshot.get("permission"), list) else None,
+                "openQuestionCount": len(snapshot.get("question") or []) if isinstance(snapshot.get("question"), list) else None,
+            }.items()
+            if value is not None
+        },
+        "latestUserIntent": snapshot.get("latestUserInputSummary"),
+        "recentCompletedWork": build_recent_completed_work(snapshot, todo),
+        "recentNotableEvents": build_recent_notable_events(snapshot),
+        "watcherState": build_rehydration_watcher_state(watcher_entry),
+    }
+
     result = {
         "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
-        "currentStatus": latest_message.get("status") or todo.get("phase") or "unknown",
+        "currentStatus": current_status,
         "currentPhase": todo.get("phase"),
         "hasPendingWork": todo.get("hasPendingWork"),
         "allTodosCompleted": todo.get("allCompleted"),
         "completedWork": completed_work[-5:] or None,
-        "latestMeaningfulPreview": snapshot.get("latestTextPreview") or snapshot.get("latestAssistantTextPreview"),
+        "latestMeaningfulPreview": latest_meaningful_preview,
         "latestUserInputSummary": snapshot.get("latestUserInputSummary"),
         "recentEventSummary": snapshot.get("accumulatedEventSummary"),
         "recentEvents": snapshot.get("eventLedger"),
         "latestMessage": latest_message or None,
         "snapshotErrors": snapshot.get("errors") or None,
+        "rehydration": {key: value for key, value in rehydration.items() if value is not None},
     }
     if watcher_entry:
         result["watcher"] = build_watcher_summary(watcher_entry)
@@ -1016,7 +1216,12 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "kind": "opencode_manager_inspect_v1",
-        "inspection": build_inspection(session_data, snapshot, watcher_entry=watcher_entry),
+        "inspection": build_inspection(
+            session_data,
+            snapshot,
+            watcher_entry=watcher_entry,
+            requested_message_limit=args.watch_message_limit,
+        ),
     }
 
 
@@ -1116,10 +1321,18 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_timeout_sec=args.watch_timeout_sec,
     )
 
+    snapshot, _errors = build_compact_snapshot(client, args.opencode_session_id, message_limit=args.watch_message_limit)
+
     return {
         "kind": "opencode_manager_attach_v1",
         "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
         "watcher": build_watcher_summary(watcher_entry),
+        "inspection": build_inspection(
+            session_data,
+            snapshot,
+            watcher_entry=watcher_entry,
+            requested_message_limit=args.watch_message_limit,
+        ),
         "registryPath": str(registry_path),
     }
 

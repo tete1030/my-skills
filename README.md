@@ -27,6 +27,8 @@ Key points:
 
 - `continue` uses `--follow-up-prompt` and can ensure watcher routing with `--ensure-watcher`.
 - `start` and `continue` return the handoff contract fields `progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, and `userFacingAck`.
+- `inspect` now includes a compact `rehydration` block with current-state rebuild data: `currentState`, `latestUserIntent`, `recentCompletedWork`, `recentNotableEvents`, `watcherState`, and `snapshotCoverage` so takeover after compact/reset stays explicit about the observed window.
+- `attach` now returns the same current-state inspection payload immediately, so attaching to an existing session gives instant takeover context instead of only watcher metadata.
 - When `progressSource=watcher`, the watcher is the progress source and `completionCheckOwner=watcher_runtime_updates` means the current turn should not do the completion check.
 - `detach` removes the watcher binding without deleting the OpenCode session and returns `detachStatus` (`detached_now`, `already_detached`, `not_found`).
 - Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
