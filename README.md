@@ -2,46 +2,37 @@
 
 OpenClaw skills and related design docs.
 
-## Layout
+## Layout by priority
 
-- `opencode/` — the actual skill package under iteration
-- `design/opencode/` — system design docs for the opencode skill/workflow
-- `design/opencode/archive/` — historical proposal/iteration documents
+- **Hot path now:** `opencode/SKILL.md` plus `python3 opencode/scripts/opencode_manager.py --help`
+- **Lower-priority reference:** this README and `opencode/references/`
+- **Not hot path:** `design/opencode/` and `design/opencode/archive/`
 
-## Notes
+The skill package stays intentionally isolated from design/iteration material so runtime guidance does not carry the full design history.
 
-The skill package is intentionally isolated from the higher-level design docs so the skill can evolve without forcing all design/iteration material into the runtime skill payload.
-
-## OpenCode Manager (Phase 2)
+## OpenCode manager quick reference
 
 Use the manager entrypoint for the current session/watcher workflow:
 
 - `python3 opencode/scripts/opencode_manager.py start ...`
 - `python3 opencode/scripts/opencode_manager.py attach ...`
 - `python3 opencode/scripts/opencode_manager.py continue ...`
-- `python3 opencode/scripts/opencode_manager.py stop-watcher ...`
-- `python3 opencode/scripts/opencode_manager.py detach ...`
 - `python3 opencode/scripts/opencode_manager.py list-sessions ...`
 - `python3 opencode/scripts/opencode_manager.py inspect ...`
 - `python3 opencode/scripts/opencode_manager.py list-watchers ...`
+- `python3 opencode/scripts/opencode_manager.py stop-watcher ...`
+- `python3 opencode/scripts/opencode_manager.py detach ...`
 
-Notes:
+Key points:
 
-- `continue` uses the real CLI flags `--follow-up-prompt` and, when needed, `--ensure-watcher`.
-- Example:
-  - `python3 opencode/scripts/opencode_manager.py continue --opencode-base-url http://127.0.0.1:4096 --opencode-session-id ses_demo --follow-up-prompt "Please continue and send me a short summary." --ensure-watcher`
-- `stop-watcher` stops a running watcher cleanly but keeps the OpenCode session.
-- `detach` removes the watcher binding without deleting the OpenCode session.
-- `detach` now returns `detachStatus` so callers can distinguish `detached_now`, `already_detached`, and `not_found` without guessing from a bare boolean.
-- `start` and `continue` now also return an agent-facing handoff contract: `progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, and `userFacingAck`.
-  - When `progressSource=watcher`, the watcher is the progress source, `turnShouldEnd=true`, and completion checking moves to `completionCheckOwner=watcher_runtime_updates` instead of the current turn.
-- Registry refresh now also recovers watcher metadata from local watcher dirs/config/state/logs under `.local/opencode-manager/...` and clears stale logical locks when the recorded watcher process is no longer the matching runtime.
-
-Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
-Manager-facing JSON/config fields keep the naming split explicit:
-
-- OpenCode: `opencodeSessionId`, `opencodeWorkspace`
-- OpenClaw: `openclawSessionKey`, `openclawDeliveryTarget`
+- `continue` uses `--follow-up-prompt` and can ensure watcher routing with `--ensure-watcher`.
+- `start` and `continue` return the handoff contract fields `progressSource`, `agentShouldPoll`, `recommendedNextAction`, `turnShouldEnd`, `completionCheckOwner`, `disallowImmediateCompletionCheck`, `recommendedUserVisibleAction`, and `userFacingAck`.
+- When `progressSource=watcher`, the watcher is the progress source and `completionCheckOwner=watcher_runtime_updates` means the current turn should not do the completion check.
+- `detach` removes the watcher binding without deleting the OpenCode session and returns `detachStatus` (`detached_now`, `already_detached`, `not_found`).
+- Manager registry + watcher runtime files stay local-only under `.local/opencode-manager/`.
+- Manager-facing JSON/config fields keep the naming split explicit:
+  - OpenCode: `opencodeSessionId`, `opencodeWorkspace`
+  - OpenClaw: `openclawSessionKey`, `openclawDeliveryTarget`
 
 ## Thin watcher runtime
 
