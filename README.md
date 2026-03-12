@@ -20,16 +20,24 @@ Use the manager entrypoint for the current session/watcher workflow:
 - `python3 opencode/scripts/opencode_manager.py list-sessions ...`
 - `python3 opencode/scripts/opencode_manager.py inspect ...`
 - `python3 opencode/scripts/opencode_manager.py inspect-history ...`
+- `python3 opencode/scripts/opencode_manager.py stop-session ...`
 - `python3 opencode/scripts/opencode_manager.py list-watchers ...`
 - `python3 opencode/scripts/opencode_manager.py stop-watcher ...`
 - `python3 opencode/scripts/opencode_manager.py detach ...`
 
 Key points:
 
-- `continue` uses `--follow-up-prompt` and can ensure watcher routing with `--ensure-watcher`.
+- `start` accepts `--first-prompt` or the safer `--first-prompt-file` (`-` = stdin); prefer file/stdin for long or shell-sensitive prompts.
+- `start` is expected to create/attach the watcher immediately for normal conversation-driven usage; do not treat watcher setup as a separate optional follow-up after `start`.
+- `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin); for normal agent usage it should also ensure watcher routing with `--ensure-watcher` so later progress returns to the originating OpenClaw session.
+- Watchers now support notification shaping knobs for token control: `--notify-min-interval-sec` (rate-limit non-critical updates), `--notify-min-priority low|normal|high`, and repeated `--notify-keyword <term>` filters. Critical updates (failed/blocked/completed) bypass these non-critical filters by default.
+- `stop-session` is the manager-level real stop surface and uses the verified OpenCode abort API instead of a pause-like follow-up prompt; it should stop only the OpenCode session and keep any watcher attached unless the user explicitly asks to stop monitoring or detach the watcher too.
+- `stop-session` rejects an explicit `--opencode-workspace` mismatch before aborting, so a scope mistake cannot silently hit the wrong workspace/session pairing.
+- `stop-session` now performs post-abort verification as well, because current live behavior shows that abort acceptance / busy-clearing alone does not guarantee the underlying OpenCode tool run actually stopped; results are classified as verified, unverified, or likely failed instead of being reported as success by default.
+- `start`, `attach`, `continue`, `inspect`, and `list-sessions` now return `opencodeUiUrl`; the usable UI URL format is `<base-url>/<base64url(workspace-no-padding)>/session/<sessionId>` rather than `<base-url>/session/<sessionId>`.
 - `start` and `continue` return the slim handoff contract fields `handoffMode`, `agentAction`, and `userFacingAck`.
-- `inspect` now includes a compact `rehydration` block with current-state rebuild data: `currentState`, `latestUserIntent`, `recentCompletedWork`, `recentNotableEvents`, `watcherState`, and `snapshotCoverage` so takeover after compact/reset stays explicit about the observed window.
-- `inspect-history` is the explicit drill-down surface for one recent message: select by `--message-id`, `--recent-index` (`0` = latest), or `--latest` and it returns compact text/tool details including read/write/patch targets when inferable plus shell/stdout tail lines.
+- `inspect` now includes a compact `rehydration` block with current-state rebuild data: `currentState`, `latestUserIntent`, `recentCompletedWork`, `recentNotableEvents`, `watcherState`, `snapshotCoverage`, and `followUpHints` so takeover after compact/reset stays explicit about the observed window and when to do a narrow history drill-down.
+- `inspect-history` is the explicit drill-down surface for one recent message: select by `--message-id`, `--recent-index` (`0` = latest, then `1`/`2` if needed), or `--latest` and it returns compact text/tool details including read/write/patch targets when inferable plus shell/stdout tail lines for “what happened between inspect points?” checks.
 - `attach` now returns the same current-state inspection payload immediately, so attaching to an existing session gives instant takeover context instead of only watcher metadata.
 - `agentAction=acknowledge_and_end_turn` means the current manager turn should stop after one acknowledgment.
 - When `handoffMode=watcher_live`, the watcher is now the authoritative future progress source; acknowledge once and end the current turn.
@@ -38,6 +46,17 @@ Key points:
 - Manager-facing JSON/config fields keep the naming split explicit:
   - OpenCode: `opencodeSessionId`, `opencodeWorkspace`
   - OpenClaw: `openclawSessionKey`, `openclawDeliveryTarget`
+
+Safe shell pattern for long prompts:
+
+```bash
+cat <<'EOF' | python3 opencode/scripts/opencode_manager.py continue \
+  --opencode-base-url http://127.0.0.1:4096 \
+  --opencode-session-id ses_demo \
+  --follow-up-prompt-file -
+Please continue this task and keep literal text like `video-sum run` intact.
+EOF
+```
 
 ## Thin watcher runtime
 

@@ -9,9 +9,6 @@ from pathlib import Path
 from typing import Callable
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-REPO_ROOT = SCRIPT_DIR.parents[1]
-MANAGER_SCRIPT = SCRIPT_DIR / "opencode_manager.py"
-DEFAULT_MANAGER_DEFAULTS_ENV = REPO_ROOT / ".local" / "opencode-manager" / "local-defaults.env"
 
 from opencode_delivery_handoff import (
     assert_handoff_boundary,
@@ -59,50 +56,35 @@ def build_agent_message(system_event_text: str, *, handoff: dict | None = None) 
     agent_input = handoff_input or extract_agent_input_from_system_event_envelope(envelope) or {}
     task_cluster = agent_input.get("taskCluster") or {}
     reply_policy = agent_input.get("replyPolicy") or {}
-    avoid = (
-        "handoff mechanics, routing details, transport details, prompt mechanics, verbatim signal payload"
-    )
-    cluster_guidance = ""
-    if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
-        cluster_guidance = (
-            "For the same task cluster, if you already handled a later or higher-rank conclusion, "
-            "keep weaker or older superseded updates internal and do not send another visible reply.\n"
-        )
-    inspect_guidance = ""
+
+    session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
+    preamble = ["Internal runtime signal for the current conversation."]
     if runtime_signal.get("action") == "inspect_once_current_state":
-        session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
-        inspect_command = (
-            "bash -lc "
-            + shlex.quote(
-                "set -a; "
-                f"source {shlex.quote(str(DEFAULT_MANAGER_DEFAULTS_ENV))}; "
-                "set +a; "
-                f"python3 {shlex.quote(str(MANAGER_SCRIPT))} inspect "
-                ' --opencode-base-url "$OPENCODE_BASE_URL"'
-                ' --opencode-workspace "$OPENCODE_WORKSPACE"'
-                f" --opencode-session-id {shlex.quote(str(session_hint))}"
-                ' --watch-message-limit "${OPENCODE_WATCH_MESSAGE_LIMIT:-10}"'
-                ' --watch-timeout-sec "${OPENCODE_WATCH_TIMEOUT_SEC:-20}"'
-            )
+        preamble.append(
+            f"Inspect {session_hint} once, then base any visible reply on that inspected current state rather than this event text."
         )
-        inspect_guidance = (
-            "Treat the payload below as a lightweight runtime signal, not as reply content to paraphrase.\n"
-            f"Before any visible reply, do one one-off inspect of {session_hint} and speak from that current state.\n"
-            "Do not restate the signal payload itself to the user.\n"
-            "Use one one-off inspect only; do not start or attach a watcher from the receiving session.\n"
-            "If you use exec, prefer exactly this single shell inspect command:\n"
-            f"{inspect_command}\n"
-            "After that single inspect, do not continue polling unless the user explicitly asks or an allowed exception clearly applies.\n"
-        )
-    return (
-        "Runtime task update for the current conversation.\n"
-        "Treat the payload below as internal runtime signal.\n"
-        + inspect_guidance
-        + "If you reply visibly, continue the task conversation naturally for the user.\n"
-        + cluster_guidance
-        + f"Avoid mentioning {avoid} unless the user explicitly asks.\n\n"
-        + system_event_text
-    )
+        preamble.append("Prefer rehydration.currentState and rehydration.sinceLatestUserInput from that inspect.")
+        preamble.append("If inspect alone still leaves a real gap, proactively run one targeted inspect-history drill-down (usually --recent-index 0/1/2, or --message-id when the inspection already points to one).")
+        preamble.append("Use that drill-down for both relevant older history and 'what happened between inspect points?' questions, especially recent shell/tool output or stdout tail lines.")
+        preamble.append("Do not fetch broad history by default; only do the narrow lookup needed to answer.")
+        preamble.append("Do not start or attach a watcher, and do not keep polling from this session.")
+    if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
+        preamble.append("Reply visibly only if the inspected current state adds net-new user-visible progress for this task cluster.")
+        preamble.append("A newer user input inside the OpenCode session does not reset same-cluster reply allowances in this chat.")
+        preamble.append("Small exception: when rehydration.sinceLatestUserInput.assistantMessageCount == 0 and the inspected state is still running with meaningful progress, you may send one short visible progress reply for this task cluster.")
+        preamble.append("Across one same-cluster chain, prefer at most one visible running/progress reply and at most one visible terminal completion/failure reply.")
+        preamble.append("Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.")
+        preamble.append("If this chat already received a visible same-cluster terminal/status reply, later same-cluster terminal/status updates are NO_REPLY unless the earlier reply was clearly wrong.")
+        preamble.append("After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.")
+        preamble.append("When suppressing, output the single token NO_REPLY and nothing else—no explanation, prefix, suffix, bullets, or code fences.")
+
+    return "\n".join([
+        *preamble,
+        "",
+        "<opencodeEvent>",
+        system_event_text,
+        "</opencodeEvent>",
+    ])
 
 
 def assert_agent_call_boundary(result: dict) -> dict:

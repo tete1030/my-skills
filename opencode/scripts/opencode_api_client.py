@@ -1,11 +1,108 @@
 #!/usr/bin/env python3
 import argparse
+import base64
 import json
-import sys
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
+
+
+HTTP_BODY_PREVIEW_LIMIT = 800
+
+
+def encode_workspace_for_ui(workspace: str) -> str:
+    normalized = str(workspace or "").strip()
+    if not normalized:
+        raise ValueError("workspace is required to build an OpenCode UI URL")
+    return base64.urlsafe_b64encode(normalized.encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def build_opencode_session_ui_url(base_url: str, workspace: str, session_id: str) -> str:
+    normalized_session_id = str(session_id or "").strip()
+    if not normalized_session_id:
+        raise ValueError("session_id is required to build an OpenCode UI URL")
+    encoded_workspace = encode_workspace_for_ui(workspace)
+    return f"{base_url.rstrip('/')}/{encoded_workspace}/session/{normalized_session_id}"
+
+
+@dataclass
+class OpenCodeApiError(RuntimeError):
+    method: str
+    path: str
+    url: str
+    status: int | None = None
+    reason: str | None = None
+    headers: Dict[str, str] | None = None
+    body_preview: str | None = None
+    cause: str | None = None
+
+    def __post_init__(self) -> None:
+        RuntimeError.__init__(self, self._build_message())
+
+    def _build_message(self) -> str:
+        detail = f"{self.method.upper()} {self.path}"
+        if self.status is not None:
+            detail += f" -> HTTP {self.status}"
+            if self.reason:
+                detail += f" {self.reason}"
+        elif self.cause:
+            detail += f" -> {self.cause}"
+        retry_after = None
+        headers = self.headers or {}
+        if isinstance(headers, dict):
+            retry_after = headers.get("retry-after") or headers.get("Retry-After")
+        if retry_after:
+            detail += f" (Retry-After={retry_after})"
+        if self.body_preview:
+            detail += f": {self.body_preview}"
+        return detail
+
+    def to_dict(self) -> Dict[str, Any]:
+        headers = dict(self.headers or {})
+        return {
+            key: value
+            for key, value in {
+                "kind": "opencode_api_error_v1",
+                "method": self.method.upper(),
+                "path": self.path,
+                "url": self.url,
+                "status": self.status,
+                "reason": self.reason,
+                "headers": headers or None,
+                "retryAfter": headers.get("retry-after") or headers.get("Retry-After"),
+                "requestId": (
+                    headers.get("x-request-id")
+                    or headers.get("X-Request-Id")
+                    or headers.get("request-id")
+                    or headers.get("Request-Id")
+                ),
+                "bodyPreview": self.body_preview,
+                "cause": self.cause,
+                "message": self._build_message(),
+            }.items()
+            if value is not None
+        }
+
+
+
+def headers_to_dict(headers: Any) -> Dict[str, str]:
+    if headers is None:
+        return {}
+    if hasattr(headers, "items"):
+        return {str(key): str(value) for key, value in headers.items()}
+    return {}
+
+
+
+def decode_body_preview(raw: bytes | None, *, limit: int = HTTP_BODY_PREVIEW_LIMIT) -> str | None:
+    if not raw:
+        return None
+    text = raw.decode("utf-8", errors="replace").strip()
+    if not text:
+        return None
+    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 @dataclass
@@ -43,19 +140,47 @@ class OpenCodeClient:
         payload = None
         if body is not None:
             payload = json.dumps(body, ensure_ascii=False).encode('utf-8')
+        url = self._url(path, params)
         req = Request(
-            self._url(path, params),
+            url,
             headers=self._headers(has_body=payload is not None),
             method=method.upper(),
             data=payload,
         )
-        with urlopen(req, timeout=self.timeout) as resp:
-            raw = resp.read()
+        try:
+            with urlopen(req, timeout=self.timeout) as resp:
+                raw = resp.read()
+        except HTTPError as exc:
+            raise OpenCodeApiError(
+                method=method,
+                path=path,
+                url=url,
+                status=exc.code,
+                reason=exc.reason,
+                headers=headers_to_dict(exc.headers),
+                body_preview=decode_body_preview(exc.read()),
+            ) from exc
+        except URLError as exc:
+            raise OpenCodeApiError(
+                method=method,
+                path=path,
+                url=url,
+                cause=str(exc.reason or exc),
+            ) from exc
         if not expect_json:
             return None
         if not raw:
             return None
-        return json.loads(raw.decode('utf-8'))
+        try:
+            return json.loads(raw.decode('utf-8'))
+        except json.JSONDecodeError as exc:
+            raise OpenCodeApiError(
+                method=method,
+                path=path,
+                url=url,
+                cause=f"invalid_json_response: {exc}",
+                body_preview=decode_body_preview(raw),
+            ) from exc
 
     def get_json(self, path: str, **params) -> Any:
         return self.request_json('GET', path, params=params)
@@ -127,6 +252,22 @@ class OpenCodeClient:
             body=body,
         )
 
+    def abort_session(
+        self,
+        session_id: str,
+        *,
+        directory: Optional[str] = None,
+        workspace: Optional[str] = None,
+    ) -> Any:
+        return self.request_json(
+            'POST',
+            f'/session/{session_id}/abort',
+            params={'directory': directory, 'workspace': workspace},
+        )
+
+    def session_ui_url(self, session_id: str, *, workspace: str) -> str:
+        return build_opencode_session_ui_url(self.base_url, workspace, session_id)
+
     def prompt_session(
         self,
         session_id: str,
@@ -189,6 +330,7 @@ class OpenCodeClient:
         return data
 
 
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description='Minimal OpenCode API client for skill prototyping.')
     p.add_argument('--base-url', required=True)
@@ -232,6 +374,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_pty = sub.add_parser('pty')
     p_pty.add_argument('--session-id')
     return p
+
 
 
 def main() -> None:

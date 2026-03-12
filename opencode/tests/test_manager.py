@@ -1,3 +1,4 @@
+import io
 import tempfile
 import unittest
 from argparse import Namespace
@@ -25,6 +26,7 @@ from opencode_manager import (  # noqa: E402
     save_json_object,
     start_command,
     start_or_attach_watcher,
+    stop_session_command,
     stop_watcher_command,
 )
 
@@ -95,6 +97,10 @@ class OpenCodeManagerTests(unittest.TestCase):
             watch_live=False,
             watch_interval_sec=60,
             idle_timeout_sec=900,
+            notify_min_interval_sec=300,
+            notify_min_priority="normal",
+            notify_keywords=["deploy", "release"],
+            notify_filter_critical=True,
             watch_message_limit=10,
             watch_timeout_sec=20,
         )
@@ -107,6 +113,10 @@ class OpenCodeManagerTests(unittest.TestCase):
         manager_config = build_manager_watcher_config(entry)
         self.assertEqual(manager_config["opencodeSessionId"], "ses_demo")
         self.assertEqual(manager_config["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
+        self.assertEqual(manager_config["notifyMinIntervalSec"], 300)
+        self.assertEqual(manager_config["notifyMinPriority"], "normal")
+        self.assertEqual(manager_config["notifyKeywords"], ["deploy", "release"])
+        self.assertTrue(manager_config["notifyFilterCritical"])
         self.assertNotIn("session_id", manager_config)
         self.assertNotIn("origin_session", manager_config)
 
@@ -224,6 +234,9 @@ class OpenCodeManagerTests(unittest.TestCase):
                         watch_live=False,
                         watch_interval_sec=60,
                         idle_timeout_sec=900,
+                        notify_min_interval_sec=0,
+                        notify_min_priority="low",
+                        notify_keywords=[],
                         watch_message_limit=10,
                         watch_timeout_sec=20,
                     )
@@ -320,7 +333,61 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(result["agentAction"], "acknowledge_and_end_turn")
             self.assertIn("OpenCode", result["userFacingAck"])
             self.assertIn("OpenClaw", result["userFacingAck"])
+            self.assertEqual(
+                result["opencodeSession"]["opencodeUiUrl"],
+                "http://127.0.0.1:4096/L3RtcC9kZW1vLXdvcmtzcGFjZQ/session/ses_demo",
+            )
             fake_client.prompt_session.assert_called_once()
+
+    def test_start_command_reads_first_prompt_from_file(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            prompt_path = Path(tmpdir) / "first-prompt.txt"
+            prompt_path.write_text("line 1 with `backticks`\nline 2", encoding="utf-8")
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt=None,
+                first_prompt_file=str(prompt_path),
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
+                openclaw_delivery_target="telegram:-100123:topic:42",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ):
+                result = start_command(args)
+
+            fake_client.prompt_session.assert_called_once_with(
+                "ses_demo",
+                directory="/tmp/demo-workspace",
+                parts=[{"type": "text", "text": "line 1 with `backticks`\nline 2"}],
+                asynchronous=True,
+            )
+            self.assertEqual(result["firstPrompt"]["inputMethod"], "file")
+            self.assertEqual(result["firstPrompt"]["promptFile"], str(prompt_path.resolve()))
+            self.assertIn("line 1 with `backticks`", result["firstPrompt"]["promptPreview"])
 
     def test_inspect_command_returns_rehydration_block_with_window_coverage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -393,6 +460,33 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(inspection["currentStatus"], "completed")
             self.assertEqual(inspection["latestUserInputSummary"], "Please continue and summarize the current state.")
             self.assertEqual(inspection["completedWork"], ["Collect current state", "Return takeover summary"])
+            self.assertNotIn("recentEventSummary", inspection)
+            self.assertNotIn("recentEvents", inspection)
+            self.assertNotIn("snapshotErrors", inspection)
+            self.assertEqual(
+                inspection["opencodeSession"],
+                {
+                    "opencodeSessionId": "ses_demo",
+                    "title": "Demo task",
+                    "opencodeWorkspace": "/tmp/demo-workspace",
+                    "opencodeUiUrl": "http://127.0.0.1:4096/L3RtcC9kZW1vLXdvcmtzcGFjZQ/session/ses_demo",
+                    "activeWatcherId": "ow_demo123",
+                    "activeWatcherStatus": "running",
+                },
+            )
+            self.assertEqual(
+                inspection["latestMessage"],
+                {
+                    "id": "msg_latest",
+                    "role": "assistant",
+                    "status": "completed",
+                    "createdAt": "2026-03-05T13:40:33.111000+00:00",
+                    "textPreview": "Patched manager inspect output.",
+                },
+            )
+            self.assertEqual(inspection["watcher"]["watcherId"], "ow_demo123")
+            self.assertEqual(inspection["watcher"]["watcherStatus"], "running")
+            self.assertIn("watchProcessAlive", inspection["watcher"])
 
             rehydration = inspection["rehydration"]
             self.assertEqual(rehydration["purpose"], "current_state_rebuild")
@@ -400,10 +494,206 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(rehydration["snapshotCoverage"]["observedMessageCount"], 4)
             self.assertTrue(rehydration["snapshotCoverage"]["mayExcludeOlderHistory"])
             self.assertEqual(rehydration["latestUserIntent"], "Please continue and summarize the current state.")
+            self.assertEqual(rehydration["sinceLatestUserInput"]["anchor"]["messageId"], "msg_user_latest")
+            self.assertEqual(rehydration["sinceLatestUserInput"]["eventCount"], 2)
+            self.assertEqual(rehydration["sinceLatestUserInput"]["assistantMessageCount"], 2)
+            self.assertEqual(rehydration["sinceLatestUserInput"]["latestAssistantText"], "Patched manager inspect output.")
+            self.assertEqual(rehydration["sinceLatestUserInput"]["completedWork"][-1]["summary"], "Patched manager inspect output.")
             self.assertEqual(rehydration["recentCompletedWork"][-1]["summary"], "Patched manager inspect output.")
             self.assertEqual(rehydration["recentNotableEvents"][1]["label"], "prune")
+            self.assertTrue(rehydration["followUpHints"]["preferTargetedLookup"])
+            self.assertEqual(rehydration["followUpHints"]["suggestedRecentIndexes"], [0, 1, 2])
+            self.assertIn("Need older context outside the retained inspect window.", rehydration["followUpHints"]["useInspectHistoryWhen"])
+            self.assertIn("Need what happened between inspect points.", rehydration["followUpHints"]["useInspectHistoryWhen"])
             self.assertEqual(rehydration["watcherState"]["watcherStatus"], "running")
             self.assertEqual(rehydration["watcherState"]["watcherId"], "ow_demo123")
+
+    def test_inspect_command_surfaces_running_stall_and_transport_hints(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, state_path = self._write_registry_running_entry(tmpdir)
+            save_json_object(
+                state_path,
+                {
+                    "watchRunner": {
+                        "lastRunAt": "2026-03-11T11:25:18+00:00",
+                        "lastOperation": "skip",
+                        "lastFactStatus": "running",
+                        "lastRunningProgressObservation": {
+                            "kind": "opencode_running_progress_observation_v1",
+                            "status": "running_without_visible_progress",
+                            "signalCodes": [
+                                "running_no_visible_progress_since_latest_user_input",
+                                "assistant_turn_started_without_visible_progress",
+                            ],
+                        },
+                        "lastTransportErrorHints": [
+                            {"name": "messages", "status": 429, "retryAfter": "30", "message": "HTTP 429 Too Many Requests"}
+                        ],
+                    }
+                },
+            )
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {
+                    "id": "msg_user_latest",
+                    "role": "user",
+                    "created": 1773227812213,
+                    "status": "running",
+                },
+                "latestTextPreview": "Please continue this task.",
+                "latestUserInputSummary": "Please continue this task.",
+                "latestUserInputMessageId": "msg_user_latest",
+                "accumulatedEventSummary": "user: Please continue this task.",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_user_latest", "summary": "Please continue this task.", "created": 1773227812213},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 2,
+                    "oldestMessageId": "msg_user_latest",
+                    "oldestMessageRole": "user",
+                    "oldestMessageCreated": 1773227812213,
+                    "newestMessageId": "msg_assistant_empty",
+                    "newestMessageRole": "assistant",
+                    "newestMessageCreated": 1773227812219,
+                },
+                "messageWindowSize": 2,
+                "messageWindowLimit": 4,
+                "todo": {"items": [], "hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+                "errors": {
+                    "messages": {
+                        "kind": "opencode_api_error_v1",
+                        "status": 429,
+                        "retryAfter": "30",
+                        "message": "GET /session/demo/message -> HTTP 429 Too Many Requests",
+                    }
+                },
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})), mock.patch(
+                "opencode_manager.datetime"
+            ) as mocked_datetime:
+                from datetime import datetime, timezone
+
+                mocked_datetime.now.return_value = datetime.fromtimestamp(1773228118, tz=timezone.utc)
+                mocked_datetime.fromtimestamp.side_effect = lambda *args, **kwargs: datetime.fromtimestamp(*args, **kwargs)
+                result = inspect_command(args)
+
+            inspection = result["inspection"]
+            self.assertEqual(inspection["runningProgressObservation"]["status"], "running_without_visible_progress")
+            self.assertTrue(inspection["runningProgressObservation"]["derived"])
+            self.assertEqual(inspection["runningProgressObservation"]["origin"], "openclaw_compact_snapshot")
+            self.assertIn(
+                "assistant_turn_started_without_visible_progress",
+                inspection["runningProgressObservation"]["signalCodes"],
+            )
+            self.assertEqual(inspection["runningProgressObservation"]["signals"][0]["origin"], "openclaw_compact_snapshot")
+            self.assertIn("Derived from compact snapshot:", inspection["runningProgressObservation"]["signals"][0]["detail"])
+            self.assertEqual(inspection["transportErrorHints"][0]["status"], 429)
+            self.assertEqual(inspection["transportErrorHints"][0]["retryAfter"], "30")
+            self.assertTrue(inspection["transportErrorHints"][0]["derived"])
+            self.assertEqual(inspection["transportErrorHints"][0]["origin"], "openclaw_snapshot_errors")
+            self.assertEqual(
+                inspection["rehydration"]["currentState"]["runningProgressObservation"]["status"],
+                "running_without_visible_progress",
+            )
+            self.assertIn(
+                "Inspect still shows running without enough visible progress; inspect-history can confirm the latest assistant/tool step.",
+                inspection["rehydration"]["followUpHints"]["useInspectHistoryWhen"],
+            )
+            self.assertIn(
+                "Transport/API errors may have hidden events; inspect-history can verify the latest durable message/output.",
+                inspection["rehydration"]["followUpHints"]["useInspectHistoryWhen"],
+            )
+            self.assertEqual(
+                inspection["watcher"]["lastRunningProgressObservation"]["status"],
+                "running_without_visible_progress",
+            )
+            self.assertEqual(inspection["watcher"]["lastTransportErrorHints"][0]["status"], 429)
+
+    def test_inspect_command_marks_externally_aborted_message_failed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {
+                    "id": "msg_abort",
+                    "role": "assistant",
+                    "created": 1773250176459,
+                    "completedAt": 1773250176760,
+                    "status": "failed",
+                    "message.errorName": "MessageAbortedError",
+                    "message.errorMessage": "The operation was aborted.",
+                    "message.aborted": True,
+                    "errorPreview": "MessageAbortedError: The operation was aborted.",
+                },
+                "latestUserInputSummary": "Continue the stop probe.",
+                "latestUserInputMessageId": "msg_user_latest",
+                "accumulatedEventSummary": "user: Continue the stop probe.",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_user_latest", "summary": "Continue the stop probe.", "created": 1773250176000},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 2,
+                    "oldestMessageId": "msg_user_latest",
+                    "oldestMessageRole": "user",
+                    "oldestMessageCreated": 1773250176000,
+                    "newestMessageId": "msg_abort",
+                    "newestMessageRole": "assistant",
+                    "newestMessageCreated": 1773250176459,
+                },
+                "messageWindowSize": 2,
+                "messageWindowLimit": 4,
+                "todo": {"items": [], "hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+                "errors": {},
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = inspect_command(args)
+
+            inspection = result["inspection"]
+            self.assertEqual(inspection["currentStatus"], "failed")
+            self.assertIn("MessageAbortedError", inspection["latestMeaningfulPreview"])
+            self.assertTrue(inspection["latestMessage"]["message.aborted"])
+            self.assertEqual(inspection["rehydration"]["currentState"]["status"], "failed")
+            self.assertIn("aborted", inspection["rehydration"]["currentState"]["latestMeaningfulPreview"].lower())
 
     def test_inspect_history_command_surfaces_patch_targets_and_new_text(self):
         args = Namespace(
@@ -636,6 +926,9 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(inspection["currentPhase"], "Answer the latest user request")
             self.assertEqual(inspection["rehydration"]["snapshotCoverage"]["requestedMessageLimit"], 3)
             self.assertEqual(inspection["rehydration"]["latestUserIntent"], "Need a quick takeover summary.")
+            self.assertEqual(inspection["rehydration"]["sinceLatestUserInput"]["eventCount"], 0)
+            self.assertEqual(inspection["rehydration"]["sinceLatestUserInput"]["assistantMessageCount"], 0)
+            self.assertIsNone(inspection["rehydration"]["sinceLatestUserInput"].get("latestAssistantText"))
             self.assertEqual(inspection["rehydration"]["watcherState"]["watcherId"], "ow_new")
 
     def test_continue_command_can_ensure_watcher_using_previous_binding(self):
@@ -709,6 +1002,47 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIn("OpenClaw", result["userFacingAck"])
             fake_client.prompt_session.assert_called_once()
 
+    def test_continue_command_reads_follow_up_prompt_from_stdin(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt=None,
+                follow_up_prompt_file="-",
+                ensure_watcher=False,
+                openclaw_session_key=None,
+                openclaw_delivery_target=None,
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                registry_path=str(registry_path),
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ), mock.patch("sys.stdin", new=io.StringIO("continue via stdin with `video-sum run`\nsecond line")):
+                result = continue_command(args)
+
+            fake_client.prompt_session.assert_called_once_with(
+                "ses_demo",
+                directory="/tmp/demo-workspace",
+                parts=[{"type": "text", "text": "continue via stdin with `video-sum run`\nsecond line"}],
+                asynchronous=True,
+            )
+            self.assertEqual(result["followUpPrompt"]["inputMethod"], "stdin")
+            self.assertIsNone(result["followUpPrompt"].get("promptFile"))
+            self.assertIn("video-sum run", result["followUpPrompt"]["promptPreview"])
+
     def test_continue_command_without_active_watcher_returns_explicit_non_handoff_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -745,6 +1079,184 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIn("OpenClaw", result["userFacingAck"])
             self.assertNotIn("watcher", result)
             fake_client.prompt_session.assert_called_once()
+
+    def test_stop_session_command_rejects_explicit_workspace_mismatch_before_abort(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, _config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                verify_wait_sec=0,
+                verify_poll_sec=0,
+                opencode_workspace="/tmp/wrong-workspace",
+                opencode_session_id="ses_demo",
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client):
+                with self.assertRaisesRegex(ValueError, "does not match the session directory"):
+                    stop_session_command(args)
+
+            fake_client.abort_session.assert_not_called()
+            fake_client.session_status.assert_not_called()
+
+    def test_stop_session_command_uses_abort_api_and_preserves_live_watcher(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                verify_wait_sec=0,
+                verify_poll_sec=0,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            fake_client.abort_session.return_value = True
+            fake_client.session_status.return_value = {}
+            verified_snapshot = {
+                "latestMessage": {
+                    "id": "msg_abort",
+                    "role": "assistant",
+                    "status": "failed",
+                    "message.errorName": "MessageAbortedError",
+                    "message.aborted": True,
+                },
+                "todo": {"hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.build_compact_snapshot", return_value=(verified_snapshot, {})
+            ), mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)):
+                result = stop_session_command(args)
+
+            fake_client.get_session.assert_called_once_with("ses_demo", directory=None)
+            fake_client.abort_session.assert_called_once_with("ses_demo", directory="/tmp/demo-workspace")
+            fake_client.session_status.assert_called_with(directory="/tmp/demo-workspace")
+            self.assertEqual(result["stopMethod"], "abort_api")
+            self.assertEqual(result["stopOutcome"], "verified_stopped")
+            self.assertTrue(result["stopped"])
+            self.assertTrue(result["abortAccepted"])
+            self.assertTrue(result["abortResult"])
+            self.assertTrue(result["stopVerified"])
+            self.assertFalse(result["stopLikelyFailed"])
+            self.assertEqual(result["verification"]["outcome"], "aborted_terminal")
+            self.assertTrue(result["watcherStillAttached"])
+            self.assertEqual(result["watcher"]["watcherId"], "ow_demo123")
+            self.assertEqual(
+                result["opencodeSession"]["opencodeUiUrl"],
+                "http://127.0.0.1:4096/L3RtcC9kZW1vLXdvcmtzcGFjZQ/session/ses_demo",
+            )
+
+    def test_stop_session_command_returns_explicit_unverified_outcome_when_abort_cannot_be_confirmed(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                verify_wait_sec=0,
+                verify_poll_sec=0,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            fake_client.abort_session.return_value = True
+            fake_client.session_status.return_value = {}
+            unverified_snapshot = {
+                "latestMessage": {
+                    "id": "msg_unknown",
+                    "role": "assistant",
+                    "status": "queued",
+                    "textPreview": "waiting for more data",
+                },
+                "todo": {"hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.build_compact_snapshot", return_value=(unverified_snapshot, {})
+            ), mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)):
+                result = stop_session_command(args)
+
+            self.assertEqual(result["stopOutcome"], "unverified")
+            self.assertFalse(result["stopped"])
+            self.assertFalse(result["stopVerified"])
+            self.assertFalse(result["stopLikelyFailed"])
+            self.assertEqual(result["verification"]["outcome"], "abort_acknowledged_but_unverified")
+            self.assertEqual(result["verification"]["inspectionStatus"], "queued")
+
+    def test_stop_session_command_reports_likely_failure_when_busy_clears_but_message_keeps_running(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                verify_wait_sec=0,
+                verify_poll_sec=0,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            fake_client.abort_session.return_value = True
+            fake_client.session_status.return_value = {}
+            running_snapshot = {
+                "latestMessage": {
+                    "id": "msg_running",
+                    "role": "assistant",
+                    "status": "running",
+                    "textPreview": "still going",
+                },
+                "todo": {"hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.build_compact_snapshot", return_value=(running_snapshot, {})
+            ), mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)):
+                result = stop_session_command(args)
+
+            self.assertEqual(result["stopOutcome"], "likely_failed")
+            self.assertFalse(result["stopped"])
+            self.assertFalse(result["stopVerified"])
+            self.assertTrue(result["stopLikelyFailed"])
+            self.assertEqual(result["verification"]["outcome"], "busy_cleared_but_message_still_running")
+            self.assertEqual(result["verification"]["inspectionStatus"], "running")
 
     def test_stop_watcher_updates_registry(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -881,6 +1393,23 @@ class OpenCodeManagerTests(unittest.TestCase):
 
     def test_parser_exposes_phase2_subcommands(self):
         parser = build_parser()
+        parsed_start = parser.parse_args(
+            [
+                "start",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-workspace",
+                "/tmp/demo-workspace",
+                "--openclaw-session-key",
+                "agent:main:telegram:group:-100123:topic:42",
+                "--first-prompt-file",
+                "prompt.txt",
+            ]
+        )
+        self.assertEqual(parsed_start.command, "start")
+        self.assertEqual(parsed_start.first_prompt_file, "prompt.txt")
+        self.assertIsNone(parsed_start.first_prompt)
+
         parsed_continue = parser.parse_args(
             [
                 "continue",
@@ -888,13 +1417,15 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "http://127.0.0.1:4096",
                 "--opencode-session-id",
                 "ses_demo",
-                "--follow-up-prompt",
-                "hello again",
+                "--follow-up-prompt-file",
+                "-",
                 "--ensure-watcher",
             ]
         )
         self.assertEqual(parsed_continue.command, "continue")
         self.assertEqual(parsed_continue.opencode_session_id, "ses_demo")
+        self.assertEqual(parsed_continue.follow_up_prompt_file, "-")
+        self.assertIsNone(parsed_continue.follow_up_prompt)
         self.assertTrue(parsed_continue.ensure_watcher)
 
         subparser_action = next(
@@ -902,9 +1433,14 @@ class OpenCodeManagerTests(unittest.TestCase):
             for action in parser._actions
             if isinstance(getattr(action, "choices", None), dict) and "continue" in action.choices
         )
+        start_help = subparser_action.choices["start"].format_help()
+        self.assertIn("--first-prompt", start_help)
+        self.assertIn("--first-prompt-file", start_help)
         continue_help = subparser_action.choices["continue"].format_help()
         self.assertIn("--follow-up-prompt", continue_help)
+        self.assertIn("--follow-up-prompt-file", continue_help)
         self.assertIn("--ensure-watcher", continue_help)
+        self.assertIn("normal conversation-driven agent usage", continue_help)
 
         parsed_history = parser.parse_args(
             [
@@ -926,6 +1462,25 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--recent-index", history_help)
         self.assertIn("--history-message-limit", history_help)
 
+        parsed_stop_session = parser.parse_args(
+            [
+                "stop-session",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+            ]
+        )
+        self.assertEqual(parsed_stop_session.command, "stop-session")
+        self.assertEqual(parsed_stop_session.opencode_session_id, "ses_demo")
+        stop_session_help = subparser_action.choices["stop-session"].format_help()
+        self.assertIn("abort", stop_session_help)
+        self.assertIn("post-abort verification", stop_session_help)
+        self.assertIn("--opencode-workspace mismatch", stop_session_help)
+        self.assertIn("verified, unverified, or likely failed", stop_session_help)
+        self.assertIn("use stop-watcher or", stop_session_help)
+        self.assertIn("detach separately only when monitoring should also stop", stop_session_help)
+
         parsed_stop = parser.parse_args(["stop-watcher", "--watcher-id", "ow_demo123"])
         self.assertEqual(parsed_stop.command, "stop-watcher")
         self.assertEqual(parsed_stop.watcher_id, "ow_demo123")
@@ -935,33 +1490,57 @@ class OpenCodeManagerTests(unittest.TestCase):
             {
                 "watcherId": "ow_demo123",
                 "watcherStatus": "running",
+                "opencodeBaseUrl": "http://127.0.0.1:4096",
                 "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
                 "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
             }
         )
         self.assertIn("opencodeSessionId", summary)
         self.assertIn("openclawSessionKey", summary)
+        self.assertEqual(summary["opencodeUiUrl"], "http://127.0.0.1:4096/L3RtcC9kZW1vLXdvcmtzcGFjZQ/session/ses_demo")
         self.assertNotIn("sessionId", summary)
         self.assertNotIn("originSession", summary)
 
     def test_readme_mentions_handoff_contract_fields(self):
         readme = (Path(__file__).resolve().parents[2] / "README.md").read_text(encoding="utf-8")
         self.assertIn("--follow-up-prompt", readme)
+        self.assertIn("--follow-up-prompt-file", readme)
+        self.assertIn("--first-prompt-file", readme)
+        self.assertIn("stdin", readme)
         self.assertIn("--ensure-watcher", readme)
+        self.assertIn("normal conversation-driven usage", readme)
+        self.assertIn("keep any watcher attached unless the user explicitly asks", readme)
         self.assertIn("inspect-history", readme)
+        self.assertIn("followUpHints", readme)
+        self.assertIn("what happened between inspect points?", readme)
         self.assertIn("handoffMode", readme)
         self.assertIn("agentAction", readme)
         self.assertIn("watcher_live", readme)
         self.assertIn("acknowledge_and_end_turn", readme)
+        self.assertIn("stop-session", readme)
+        self.assertIn("opencodeUiUrl", readme)
+        self.assertIn("base64url(workspace-no-padding)", readme)
 
     def test_skill_mentions_manager_handoff_contract(self):
         skill = (Path(__file__).resolve().parents[1] / "SKILL.md").read_text(encoding="utf-8")
         self.assertIn("inspect-history", skill)
+        self.assertIn("what happened between inspect points?", skill)
+        self.assertIn("narrow", skill)
         self.assertIn("handoffMode", skill)
         self.assertIn("agentAction", skill)
         self.assertIn("watcher_live", skill)
         self.assertIn("acknowledge_and_end_turn", skill)
         self.assertIn("preflight that path on the current host", skill)
+        self.assertIn("stop-session", skill)
+        self.assertIn("Starting / continuing work should normally ensure a watcher", skill)
+        self.assertIn("use `stop-watcher` or `detach` only when the user explicitly asks", skill)
+        self.assertIn("opencodeUiUrl", skill)
+        self.assertIn("base64url(workspace-no-padding)", skill)
+        self.assertIn("opencode_manager.py", skill)
+        self.assertIn("--follow-up-prompt-file", skill)
+        self.assertIn("--first-prompt-file", skill)
+        self.assertIn("stdin", skill)
 
 
 if __name__ == "__main__":

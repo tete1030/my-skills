@@ -16,8 +16,16 @@ from typing import Any, Iterator
 
 import fcntl
 
-from opencode_api_client import OpenCodeClient
-from opencode_snapshot import build_compact_snapshot, build_event_record, clean_preview, compact_latest_message, shorten_path
+from opencode_api_client import OpenCodeClient, build_opencode_session_ui_url
+from opencode_snapshot import (
+    analyze_running_progress,
+    build_compact_snapshot,
+    build_event_record,
+    clean_preview,
+    compact_latest_message,
+    shorten_path,
+    summarize_transport_errors,
+)
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 SKILL_ROOT = SCRIPT_DIR.parent
@@ -32,6 +40,7 @@ DEFAULT_HISTORY_MESSAGE_LIMIT = 25
 DEFAULT_TIMEOUT_SEC = 20
 DEFAULT_STOP_TIMEOUT_SEC = 10
 DEFAULT_HISTORY_ANCHOR_COUNT = 6
+DEFAULT_TARGETED_HISTORY_RECENT_INDEXES = (0, 1, 2)
 DETAIL_TEXT_LIMIT = 1200
 DETAIL_TEXT_PREVIEW_LIMIT = 240
 DETAIL_OUTPUT_TAIL_LINES = 4
@@ -84,6 +93,37 @@ def resolve_opencode_token(opencode_token: str | None, opencode_token_env: str |
             raise ValueError(f"environment variable named by --opencode-token-env is empty or unset: {opencode_token_env}")
         return env_value
     return opencode_token
+
+
+
+def resolve_prompt_input(
+    prompt_text: str | None,
+    prompt_file: str | None,
+    *,
+    text_flag: str,
+    file_flag: str,
+) -> dict[str, Any]:
+    if prompt_text is not None and prompt_file is not None:
+        raise ValueError(f"set either {text_flag} or {file_flag}, not both")
+    if prompt_text is not None:
+        return {
+            "text": prompt_text,
+            "inputMethod": "text",
+        }
+    if prompt_file is None:
+        raise ValueError(f"missing prompt input: set one of {text_flag} or {file_flag}")
+    if prompt_file == "-":
+        return {
+            "text": sys.stdin.read(),
+            "inputMethod": "stdin",
+        }
+
+    prompt_path = Path(prompt_file).expanduser().resolve()
+    return {
+        "text": prompt_path.read_text(encoding="utf-8"),
+        "inputMethod": "file",
+        "promptFile": str(prompt_path),
+    }
 
 
 
@@ -244,6 +284,10 @@ def build_manager_watcher_config(entry: dict[str, Any]) -> dict[str, Any]:
         "watchIntervalSec": entry["watchIntervalSec"],
         "watchLive": entry["watchLive"],
         "idleTimeoutSec": entry["idleTimeoutSec"],
+        "notifyMinIntervalSec": entry.get("notifyMinIntervalSec", 0),
+        "notifyMinPriority": entry.get("notifyMinPriority", "low"),
+        "notifyKeywords": entry.get("notifyKeywords") or [],
+        "notifyFilterCritical": bool(entry.get("notifyFilterCritical", False)),
     }
 
 
@@ -320,6 +364,10 @@ def build_recovered_entry_from_watcher_dir(
         "watchLive": config.get("watchLive") if isinstance(config.get("watchLive"), bool) else config.get("live"),
         "watchIntervalSec": config.get("watchIntervalSec") or config.get("interval_sec"),
         "idleTimeoutSec": config.get("idleTimeoutSec") or config.get("idle_timeout_sec"),
+        "notifyMinIntervalSec": config.get("notifyMinIntervalSec") or config.get("notify_min_interval_sec") or 0,
+        "notifyMinPriority": config.get("notifyMinPriority") or config.get("notify_min_priority") or config.get("notifyMinSeverity") or config.get("notify_min_severity") or "low",
+        "notifyKeywords": config.get("notifyKeywords") or config.get("notify_keywords") or [],
+        "notifyFilterCritical": bool(config.get("notifyFilterCritical") or config.get("notify_filter_critical") or False),
         "watchMessageLimit": config.get("watchMessageLimit") or config.get("message_limit"),
         "watchTimeoutSec": config.get("watchTimeoutSec") or config.get("timeout"),
         "watchCreatedAt": log_banner.get("startedAt") or iso_from_epoch_ms(config_path.stat().st_mtime * 1000),
@@ -390,6 +438,8 @@ def refresh_registry_entry(
         refreshed["lastPreview"] = watch_state.get("lastPreview")
         refreshed["lastActivityAt"] = watch_state.get("lastActivityAt")
         refreshed["idleEligibleSince"] = watch_state.get("idleEligibleSince")
+        refreshed["lastRunningProgressObservation"] = watch_state.get("lastRunningProgressObservation")
+        refreshed["lastTransportErrorHints"] = watch_state.get("lastTransportErrorHints")
         if watch_state.get("lastExitReason"):
             refreshed["watchExitReason"] = watch_state.get("lastExitReason")
         if watch_state.get("lastExitedAt"):
@@ -465,14 +515,25 @@ def find_latest_watcher_entry(registry: dict[str, Any], opencode_session_id: str
 
 
 
-def build_session_summary(session_data: dict[str, Any], *, watcher_entry: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_session_summary(
+    session_data: dict[str, Any],
+    *,
+    opencode_base_url: str | None = None,
+    watcher_entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     summary = session_data.get("summary") if isinstance(session_data.get("summary"), dict) else {}
     time_data = session_data.get("time") if isinstance(session_data.get("time"), dict) else {}
+    opencode_session_id = session_data.get("id") or session_data.get("sessionID") or session_data.get("sessionId")
+    opencode_workspace = session_data.get("directory")
+    opencode_ui_url = None
+    if opencode_base_url and isinstance(opencode_workspace, str) and opencode_workspace and isinstance(opencode_session_id, str) and opencode_session_id:
+        opencode_ui_url = build_opencode_session_ui_url(opencode_base_url, opencode_workspace, opencode_session_id)
     result = {
-        "opencodeSessionId": session_data.get("id") or session_data.get("sessionID") or session_data.get("sessionId"),
+        "opencodeSessionId": opencode_session_id,
         "slug": session_data.get("slug"),
         "title": session_data.get("title"),
-        "opencodeWorkspace": session_data.get("directory"),
+        "opencodeWorkspace": opencode_workspace,
+        "opencodeUiUrl": opencode_ui_url,
         "version": session_data.get("version"),
         "createdAt": iso_from_epoch_ms(time_data.get("created")),
         "updatedAt": iso_from_epoch_ms(time_data.get("updated")),
@@ -500,6 +561,8 @@ def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str,
         return "blocked"
 
     raw_status = str(latest_message.get("status") or snapshot.get("status") or "").strip().lower()
+    if latest_message.get("message.aborted") or latest_message.get("message.errorName"):
+        return "failed"
     if raw_status in {"failed", "error", "cancelled", "canceled"}:
         return "failed"
     if todo.get("hasPendingWork"):
@@ -511,6 +574,128 @@ def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str,
     if todo.get("allCompleted"):
         return "completed"
     return "unknown"
+
+
+
+def classify_stop_verification(
+    *,
+    busy_entry: Any,
+    snapshot: dict[str, Any] | None,
+    abort_requested_at_ms: int | None,
+) -> dict[str, Any]:
+    snapshot = snapshot if isinstance(snapshot, dict) else {}
+    latest_message = snapshot.get("latestMessage") if isinstance(snapshot.get("latestMessage"), dict) else {}
+    todo = snapshot.get("todo") if isinstance(snapshot.get("todo"), dict) else {}
+    current_status = derive_inspection_status(snapshot, latest_message, todo)
+    latest_completed_at = latest_message.get("completedAt")
+    completed_after_abort = False
+    if abort_requested_at_ms is not None:
+        try:
+            completed_after_abort = isinstance(latest_completed_at, (int, float)) and int(latest_completed_at) >= int(abort_requested_at_ms)
+        except (TypeError, ValueError):
+            completed_after_abort = False
+
+    if busy_entry is not None:
+        outcome = "still_busy_after_abort"
+        verified = False
+        likely_failed = False
+    elif latest_message.get("message.aborted") or current_status == "failed":
+        outcome = "aborted_terminal"
+        verified = True
+        likely_failed = False
+    elif current_status == "completed":
+        outcome = "completed_after_abort_request" if completed_after_abort else "completed_without_abort_marker"
+        verified = False
+        likely_failed = True
+    elif current_status == "running":
+        outcome = "busy_cleared_but_message_still_running"
+        verified = False
+        likely_failed = True
+    else:
+        outcome = "abort_acknowledged_but_unverified"
+        verified = False
+        likely_failed = False
+
+    return {
+        "outcome": outcome,
+        "verified": verified,
+        "stopLikelyFailed": likely_failed,
+        "busyEntryPresent": busy_entry is not None,
+        "inspectionStatus": current_status,
+        "latestMessage": {
+            key: value
+            for key, value in {
+                "id": latest_message.get("id"),
+                "role": latest_message.get("role"),
+                "status": latest_message.get("status"),
+                "completedAt": iso_from_epoch_ms(latest_completed_at),
+                "finish": latest_message.get("finish"),
+                "errorName": latest_message.get("message.errorName"),
+                "aborted": latest_message.get("message.aborted"),
+                "textPreview": latest_message.get("textPreview"),
+                "toolOutputPreview": latest_message.get("toolOutputPreview"),
+            }.items()
+            if value is not None
+        },
+    }
+
+
+
+def verify_stop_session_attempt(
+    client: OpenCodeClient,
+    *,
+    session_id: str,
+    directory: str,
+    abort_requested_at_ms: int,
+    verify_wait_sec: float,
+    verify_poll_sec: float,
+    message_limit: int = DEFAULT_MESSAGE_LIMIT,
+) -> dict[str, Any]:
+    started_at = time.time()
+    deadline = started_at + max(0.0, float(verify_wait_sec))
+    poll_sec = max(0.05, float(verify_poll_sec))
+    observations: list[dict[str, Any]] = []
+    snapshot_errors: dict[str, Any] | None = None
+
+    while True:
+        busy_map = client.session_status(directory=directory)
+        busy_entry = busy_map.get(session_id) if isinstance(busy_map, dict) else None
+        snapshot, snapshot_errors = build_compact_snapshot(client, session_id, message_limit=message_limit)
+        classified = classify_stop_verification(
+            busy_entry=busy_entry,
+            snapshot=snapshot,
+            abort_requested_at_ms=abort_requested_at_ms,
+        )
+        observations.append(
+            {
+                "checkedAt": now_iso(),
+                "busyEntryPresent": classified["busyEntryPresent"],
+                "inspectionStatus": classified["inspectionStatus"],
+                "outcome": classified["outcome"],
+                "verified": classified["verified"],
+                "stopLikelyFailed": classified["stopLikelyFailed"],
+                "latestMessage": classified["latestMessage"],
+            }
+        )
+        if classified["verified"] or classified["stopLikelyFailed"] or time.time() >= deadline:
+            return {
+                "mode": "post_abort_verification",
+                "waitSec": max(0.0, float(verify_wait_sec)),
+                "pollSec": poll_sec,
+                "observationCount": len(observations),
+                "outcome": classified["outcome"],
+                "verified": classified["verified"],
+                "stopLikelyFailed": classified["stopLikelyFailed"],
+                "busyEntryPresent": classified["busyEntryPresent"],
+                "inspectionStatus": classified["inspectionStatus"],
+                "latestMessage": classified["latestMessage"],
+                "snapshotErrors": snapshot_errors or None,
+                "observations": observations,
+            }
+        remaining = deadline - time.time()
+        if remaining <= 0:
+            continue
+        time.sleep(min(poll_sec, remaining))
 
 
 
@@ -528,14 +713,15 @@ def build_recent_event_label(event: dict[str, Any]) -> str:
 
 
 
-def build_recent_notable_events(snapshot: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]] | None:
+def visible_snapshot_events(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
     events = snapshot.get("eventLedger") if isinstance(snapshot.get("eventLedger"), list) else []
-    visible = [event for event in events if isinstance(event, dict) and not event.get("ignored")]
-    if not visible:
-        return None
+    return [event for event in events if isinstance(event, dict) and not event.get("ignored")]
 
+
+
+def build_notable_event_items(events: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]] | None:
     notable = []
-    for event in visible[-limit:]:
+    for event in events[-limit:]:
         summary = preview_text(event.get("summary"), limit=120)
         if not summary:
             continue
@@ -548,6 +734,54 @@ def build_recent_notable_events(snapshot: dict[str, Any], *, limit: int = 5) -> 
         }
         notable.append({key: value for key, value in item.items() if value is not None})
     return notable or None
+
+
+
+def build_recent_notable_events(snapshot: dict[str, Any], *, limit: int = 5) -> list[dict[str, Any]] | None:
+    visible = visible_snapshot_events(snapshot)
+    if not visible:
+        return None
+    return build_notable_event_items(visible, limit=limit)
+
+
+
+def build_completed_event_items(events: list[dict[str, Any]], *, limit: int = 5) -> list[dict[str, Any]] | None:
+    completed: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+
+    def append_item(source: str, summary: Any, **extra: Any) -> None:
+        normalized = preview_text(summary, limit=140)
+        if not normalized:
+            return
+        signature = (source, normalized)
+        if signature in seen:
+            return
+        seen.add(signature)
+        item = {"source": source, "summary": normalized, **extra}
+        completed.append({key: value for key, value in item.items() if value is not None})
+
+    completed_tool_statuses = {"completed", "done", "finished", "succeeded", "success", "ok"}
+    for event in events:
+        kind = event.get("kind")
+        if kind in {"user_input", "read", "prune"}:
+            continue
+        if kind == "tool":
+            tool_status = str(event.get("toolStatus") or "").strip().lower()
+            if tool_status and tool_status not in completed_tool_statuses:
+                continue
+            summary_text = str(event.get("summary") or "").strip().lower()
+            if summary_text in completed_tool_statuses:
+                continue
+        append_item(
+            "event",
+            event.get("summary"),
+            kind=kind,
+            label=build_recent_event_label(event),
+            messageId=event.get("messageId"),
+            createdAt=iso_from_epoch_ms(event.get("created")),
+        )
+
+    return completed[-limit:] or None
 
 
 
@@ -570,31 +804,81 @@ def build_recent_completed_work(snapshot: dict[str, Any], todo: dict[str, Any], 
         if isinstance(item, dict) and str(item.get("status") or "").strip().lower() == "completed":
             append_item("todo", item.get("content"))
 
-    completed_tool_statuses = {"completed", "done", "finished", "succeeded", "success", "ok"}
-    events = snapshot.get("eventLedger") if isinstance(snapshot.get("eventLedger"), list) else []
-    for event in events:
-        if not isinstance(event, dict) or event.get("ignored"):
-            continue
-        kind = event.get("kind")
-        if kind in {"user_input", "read", "prune"}:
-            continue
-        if kind == "tool":
-            tool_status = str(event.get("toolStatus") or "").strip().lower()
-            if tool_status and tool_status not in completed_tool_statuses:
-                continue
-            summary_text = str(event.get("summary") or "").strip().lower()
-            if summary_text in completed_tool_statuses:
-                continue
-        append_item(
-            "event",
-            event.get("summary"),
-            kind=kind,
-            label=build_recent_event_label(event),
-            messageId=event.get("messageId"),
-            createdAt=iso_from_epoch_ms(event.get("created")),
-        )
+    for item in build_completed_event_items(visible_snapshot_events(snapshot), limit=limit) or []:
+        append_item(item.get("source") or "event", item.get("summary"), **{
+            key: value
+            for key, value in item.items()
+            if key not in {"source", "summary"}
+        })
 
     return completed[-limit:] or None
+
+
+
+def build_since_latest_user_input(snapshot: dict[str, Any], *, limit: int = 4) -> dict[str, Any] | None:
+    visible = visible_snapshot_events(snapshot)
+    if not visible:
+        return None
+
+    latest_user_message_id = snapshot.get("latestUserInputMessageId")
+    anchor_index = None
+    fallback_index = None
+    for index in range(len(visible) - 1, -1, -1):
+        event = visible[index]
+        if event.get("kind") != "user_input":
+            continue
+        if fallback_index is None:
+            fallback_index = index
+        if latest_user_message_id and event.get("messageId") == latest_user_message_id:
+            anchor_index = index
+            break
+    if anchor_index is None:
+        anchor_index = fallback_index
+    if anchor_index is None:
+        return None
+
+    anchor = visible[anchor_index]
+    delta_events = visible[anchor_index + 1 :]
+    unique_message_ids: list[str] = []
+    unique_assistant_message_ids: list[str] = []
+    seen_message_ids: set[str] = set()
+    seen_assistant_message_ids: set[str] = set()
+    latest_assistant_text = None
+    latest_assistant_message_id = None
+
+    for event in delta_events:
+        message_id = event.get("messageId")
+        if isinstance(message_id, str) and message_id and message_id not in seen_message_ids:
+            seen_message_ids.add(message_id)
+            unique_message_ids.append(message_id)
+        role = str(event.get("role") or ("user" if event.get("kind") == "user_input" else "assistant")).strip().lower()
+        if role == "assistant" and isinstance(message_id, str) and message_id and message_id not in seen_assistant_message_ids:
+            seen_assistant_message_ids.add(message_id)
+            unique_assistant_message_ids.append(message_id)
+        if role == "assistant" and event.get("kind") == "text":
+            latest_assistant_text = preview_text(event.get("summary"), limit=140)
+            latest_assistant_message_id = message_id
+
+    result = {
+        "anchor": {
+            key: value
+            for key, value in {
+                "messageId": anchor.get("messageId") or latest_user_message_id,
+                "summary": preview_text(anchor.get("summary") or snapshot.get("latestUserInputSummary"), limit=140),
+                "createdAt": iso_from_epoch_ms(anchor.get("created")),
+            }.items()
+            if value is not None
+        }
+        or None,
+        "eventCount": len(delta_events),
+        "messageCount": len(unique_message_ids),
+        "assistantMessageCount": len(unique_assistant_message_ids),
+        "latestAssistantText": latest_assistant_text,
+        "latestAssistantMessageId": latest_assistant_message_id,
+        "completedWork": build_completed_event_items(delta_events, limit=limit),
+        "notableEvents": build_notable_event_items(delta_events, limit=limit),
+    }
+    return {key: value for key, value in result.items() if value is not None}
 
 
 
@@ -652,10 +936,96 @@ def build_rehydration_watcher_state(watcher_entry: dict[str, Any] | None) -> dic
             "lastOpencodeStatus": watcher_entry.get("lastOpencodeStatus"),
             "lastOpencodePhase": watcher_entry.get("lastOpencodePhase"),
             "lastPreview": watcher_entry.get("lastPreview"),
+            "lastRunningProgressObservation": watcher_entry.get("lastRunningProgressObservation"),
+            "lastTransportErrorHints": watcher_entry.get("lastTransportErrorHints"),
             "watchExitReason": watcher_entry.get("watchExitReason"),
         }.items()
         if value is not None
     }
+
+
+
+def build_rehydration_follow_up_hints(
+    snapshot_coverage: dict[str, Any],
+    *,
+    running_progress_observation: dict[str, Any] | None = None,
+    transport_error_hints: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    use_inspect_history_when = [
+        "Need exact assistant/tool message behind latestMeaningfulPreview.",
+        "Need recent shell/tool output or write/patch details.",
+        "Need what happened between inspect points.",
+    ]
+    if snapshot_coverage.get("mayExcludeOlderHistory"):
+        use_inspect_history_when.insert(1, "Need older context outside the retained inspect window.")
+    if running_progress_observation:
+        use_inspect_history_when.append(
+            "Inspect still shows running without enough visible progress; inspect-history can confirm the latest assistant/tool step."
+        )
+    if transport_error_hints:
+        use_inspect_history_when.append(
+            "Transport/API errors may have hidden events; inspect-history can verify the latest durable message/output."
+        )
+    return {
+        "preferTargetedLookup": True,
+        "suggestedRecentIndexes": list(DEFAULT_TARGETED_HISTORY_RECENT_INDEXES),
+        "useInspectHistoryWhen": use_inspect_history_when,
+    }
+
+
+
+def build_inspect_session_summary(
+    session_data: dict[str, Any],
+    *,
+    opencode_base_url: str | None = None,
+    watcher_entry: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    session_summary = build_session_summary(
+        session_data,
+        opencode_base_url=opencode_base_url,
+        watcher_entry=watcher_entry,
+    )
+    compact = {
+        key: session_summary.get(key)
+        for key in (
+            "opencodeSessionId",
+            "title",
+            "opencodeWorkspace",
+            "opencodeUiUrl",
+            "activeWatcherId",
+            "activeWatcherStatus",
+        )
+        if session_summary.get(key) is not None
+    }
+    return compact
+
+
+
+def build_inspect_latest_message(latest_message: dict[str, Any]) -> dict[str, Any] | None:
+    if not latest_message:
+        return None
+    return {
+        key: value
+        for key, value in {
+            "id": latest_message.get("id"),
+            "role": latest_message.get("role"),
+            "status": latest_message.get("status"),
+            "createdAt": iso_from_epoch_ms(latest_message.get("created")),
+            "completedAt": iso_from_epoch_ms(latest_message.get("completedAt")),
+            "finish": latest_message.get("finish"),
+            "textPreview": latest_message.get("message.lastTextPreview") or latest_message.get("textPreview"),
+            "toolOutputPreview": latest_message.get("toolOutputPreview"),
+            "errorPreview": latest_message.get("errorPreview"),
+            "message.aborted": latest_message.get("message.aborted"),
+            "message.errorName": latest_message.get("message.errorName"),
+        }.items()
+        if value is not None
+    }
+
+
+
+def build_inspect_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    return build_rehydration_watcher_state(entry) or {}
 
 
 
@@ -1023,6 +1393,7 @@ def build_history_detail(
     session_data: dict[str, Any],
     messages: list[dict[str, Any]],
     *,
+    opencode_base_url: str | None = None,
     watcher_entry: dict[str, Any] | None = None,
     message_limit: int,
     selected_message_id: str | None,
@@ -1042,7 +1413,7 @@ def build_history_detail(
     recent_anchors.sort(key=lambda item: item.get("recentIndex", 0))
 
     result = {
-        "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
+        "opencodeSession": build_session_summary(session_data, opencode_base_url=opencode_base_url, watcher_entry=watcher_entry),
         "selection": {
             key: value
             for key, value in {
@@ -1067,6 +1438,7 @@ def build_inspection(
     session_data: dict[str, Any],
     snapshot: dict[str, Any],
     *,
+    opencode_base_url: str | None = None,
     watcher_entry: dict[str, Any] | None = None,
     requested_message_limit: int | None = None,
 ) -> dict[str, Any]:
@@ -1078,11 +1450,19 @@ def build_inspection(
             completed_work.append(item.get("content"))
 
     current_status = derive_inspection_status(snapshot, latest_message, todo)
-    latest_meaningful_preview = snapshot.get("latestTextPreview") or snapshot.get("latestAssistantTextPreview")
+    latest_meaningful_preview = (
+        snapshot.get("latestTextPreview")
+        or snapshot.get("latestAssistantTextPreview")
+        or latest_message.get("errorPreview")
+        or latest_message.get("message.errorMessage")
+    )
+    running_progress_observation = analyze_running_progress(snapshot, current_status=current_status)
+    transport_error_hints = summarize_transport_errors(snapshot.get("errors"))
+    snapshot_coverage = build_snapshot_coverage(snapshot, requested_message_limit=requested_message_limit)
     rehydration = {
         "version": "v1",
         "purpose": "current_state_rebuild",
-        "snapshotCoverage": build_snapshot_coverage(snapshot, requested_message_limit=requested_message_limit),
+        "snapshotCoverage": snapshot_coverage,
         "currentState": {
             key: value
             for key, value in {
@@ -1093,17 +1473,29 @@ def build_inspection(
                 "allTodosCompleted": todo.get("allCompleted"),
                 "pendingPermissionCount": len(snapshot.get("permission") or []) if isinstance(snapshot.get("permission"), list) else None,
                 "openQuestionCount": len(snapshot.get("question") or []) if isinstance(snapshot.get("question"), list) else None,
+                "runningProgressObservation": running_progress_observation,
+                "transportErrorHints": transport_error_hints,
             }.items()
             if value is not None
         },
         "latestUserIntent": snapshot.get("latestUserInputSummary"),
+        "sinceLatestUserInput": build_since_latest_user_input(snapshot),
         "recentCompletedWork": build_recent_completed_work(snapshot, todo),
         "recentNotableEvents": build_recent_notable_events(snapshot),
+        "followUpHints": build_rehydration_follow_up_hints(
+            snapshot_coverage,
+            running_progress_observation=running_progress_observation,
+            transport_error_hints=transport_error_hints,
+        ),
         "watcherState": build_rehydration_watcher_state(watcher_entry),
     }
 
     result = {
-        "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
+        "opencodeSession": build_inspect_session_summary(
+            session_data,
+            opencode_base_url=opencode_base_url,
+            watcher_entry=watcher_entry,
+        ),
         "currentStatus": current_status,
         "currentPhase": todo.get("phase"),
         "hasPendingWork": todo.get("hasPendingWork"),
@@ -1111,19 +1503,24 @@ def build_inspection(
         "completedWork": completed_work[-5:] or None,
         "latestMeaningfulPreview": latest_meaningful_preview,
         "latestUserInputSummary": snapshot.get("latestUserInputSummary"),
-        "recentEventSummary": snapshot.get("accumulatedEventSummary"),
-        "recentEvents": snapshot.get("eventLedger"),
-        "latestMessage": latest_message or None,
-        "snapshotErrors": snapshot.get("errors") or None,
+        "latestMessage": build_inspect_latest_message(latest_message),
+        "runningProgressObservation": running_progress_observation,
+        "transportErrorHints": transport_error_hints,
         "rehydration": {key: value for key, value in rehydration.items() if value is not None},
     }
     if watcher_entry:
-        result["watcher"] = build_watcher_summary(watcher_entry)
+        result["watcher"] = build_inspect_watcher_summary(watcher_entry)
     return {key: value for key, value in result.items() if value is not None}
 
 
 
 def build_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
+    opencode_base_url = entry.get("opencodeBaseUrl")
+    opencode_workspace = entry.get("opencodeWorkspace")
+    opencode_session_id = entry.get("opencodeSessionId")
+    opencode_ui_url = None
+    if isinstance(opencode_base_url, str) and opencode_base_url and isinstance(opencode_workspace, str) and opencode_workspace and isinstance(opencode_session_id, str) and opencode_session_id:
+        opencode_ui_url = build_opencode_session_ui_url(opencode_base_url, opencode_workspace, opencode_session_id)
     return {
         key: value
         for key, value in {
@@ -1131,13 +1528,19 @@ def build_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
             "watcherStatus": entry.get("watcherStatus"),
             "watchProcessId": entry.get("watchProcessId"),
             "watchProcessAlive": entry.get("watchProcessAlive"),
-            "opencodeSessionId": entry.get("opencodeSessionId"),
-            "opencodeWorkspace": entry.get("opencodeWorkspace"),
+            "opencodeBaseUrl": opencode_base_url,
+            "opencodeSessionId": opencode_session_id,
+            "opencodeWorkspace": opencode_workspace,
+            "opencodeUiUrl": opencode_ui_url,
             "openclawSessionKey": entry.get("openclawSessionKey"),
             "openclawDeliveryTarget": entry.get("openclawDeliveryTarget"),
             "watchLive": entry.get("watchLive"),
             "watchIntervalSec": entry.get("watchIntervalSec"),
             "idleTimeoutSec": entry.get("idleTimeoutSec"),
+            "notifyMinIntervalSec": entry.get("notifyMinIntervalSec"),
+            "notifyMinPriority": entry.get("notifyMinPriority"),
+            "notifyKeywords": entry.get("notifyKeywords"),
+            "notifyFilterCritical": entry.get("notifyFilterCritical"),
             "watchStartedAt": entry.get("watchStartedAt"),
             "watchExitedAt": entry.get("watchExitedAt"),
             "watchExitReason": entry.get("watchExitReason"),
@@ -1148,6 +1551,8 @@ def build_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
             "lastOpencodeStatus": entry.get("lastOpencodeStatus"),
             "lastOpencodePhase": entry.get("lastOpencodePhase"),
             "lastPreview": entry.get("lastPreview"),
+            "lastRunningProgressObservation": entry.get("lastRunningProgressObservation"),
+            "lastTransportErrorHints": entry.get("lastTransportErrorHints"),
             "watcherConfigPath": entry.get("watcherConfigPath"),
             "watcherStatePath": entry.get("watcherStatePath"),
             "watcherLogPath": entry.get("watcherLogPath"),
@@ -1222,6 +1627,39 @@ def ensure_session_exists(
 
 
 
+def normalize_workspace_scope(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return os.path.normpath(os.path.expanduser(text))
+
+
+
+def resolve_stop_session_workspace(*, requested_workspace: str | None, session_data: dict[str, Any]) -> str:
+    actual_workspace_raw = session_data.get("directory")
+    actual_workspace = normalize_workspace_scope(actual_workspace_raw)
+    requested_normalized = normalize_workspace_scope(requested_workspace)
+
+    if requested_workspace is not None:
+        if actual_workspace is None:
+            raise ValueError(
+                "stop-session could not verify the session directory for the explicit --opencode-workspace value"
+            )
+        if requested_normalized != actual_workspace:
+            raise ValueError(
+                "stop-session refused to abort because explicit --opencode-workspace does not match the "
+                f"session directory (requested={requested_workspace!r}, actual={actual_workspace_raw!r})"
+            )
+
+    resolved_workspace = actual_workspace or requested_normalized
+    if not isinstance(resolved_workspace, str) or not resolved_workspace:
+        raise ValueError("stop-session requires a resolvable opencodeWorkspace")
+    return resolved_workspace
+
+
+
 def create_watcher_entry(
     *,
     watcher_id: str,
@@ -1235,8 +1673,12 @@ def create_watcher_entry(
     watch_live: bool,
     watch_interval_sec: int,
     idle_timeout_sec: int,
-    watch_message_limit: int,
-    watch_timeout_sec: int,
+    notify_min_interval_sec: int,
+    notify_min_priority: str,
+    notify_keywords: list[str],
+    notify_filter_critical: bool = False,
+    watch_message_limit: int = DEFAULT_MESSAGE_LIMIT,
+    watch_timeout_sec: int = DEFAULT_TIMEOUT_SEC,
     watcher_root: Path | None = None,
 ) -> dict[str, Any]:
     paths = watcher_paths_for_id(watcher_id, watcher_root=watcher_root)
@@ -1253,6 +1695,10 @@ def create_watcher_entry(
         "watchLive": watch_live,
         "watchIntervalSec": watch_interval_sec,
         "idleTimeoutSec": idle_timeout_sec,
+        "notifyMinIntervalSec": notify_min_interval_sec,
+        "notifyMinPriority": notify_min_priority,
+        "notifyKeywords": list(notify_keywords),
+        "notifyFilterCritical": bool(notify_filter_critical),
         "watchMessageLimit": watch_message_limit,
         "watchTimeoutSec": watch_timeout_sec,
         "watchCreatedAt": now_iso(),
@@ -1276,8 +1722,12 @@ def start_or_attach_watcher(
     watch_live: bool,
     watch_interval_sec: int,
     idle_timeout_sec: int,
-    watch_message_limit: int,
-    watch_timeout_sec: int,
+    notify_min_interval_sec: int,
+    notify_min_priority: str,
+    notify_keywords: list[str],
+    notify_filter_critical: bool = False,
+    watch_message_limit: int = DEFAULT_MESSAGE_LIMIT,
+    watch_timeout_sec: int = DEFAULT_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     with locked_registry(registry_path) as (registry, _path):
         refresh_registry_entries(registry, registry_path=registry_path)
@@ -1301,6 +1751,10 @@ def start_or_attach_watcher(
             watch_live=watch_live,
             watch_interval_sec=watch_interval_sec,
             idle_timeout_sec=idle_timeout_sec,
+            notify_min_interval_sec=notify_min_interval_sec,
+            notify_min_priority=notify_min_priority,
+            notify_keywords=notify_keywords,
+            notify_filter_critical=notify_filter_critical,
             watch_message_limit=watch_message_limit,
             watch_timeout_sec=watch_timeout_sec,
             watcher_root=watcher_root,
@@ -1384,6 +1838,16 @@ def resolve_continue_watcher_request(
     watch_live = bool(coalesce(args.watch_live, latest_entry.get("watchLive") if latest_entry else False))
     watch_interval_sec = int(coalesce(args.watch_interval_sec, latest_entry.get("watchIntervalSec") if latest_entry else DEFAULT_WATCH_INTERVAL_SEC))
     idle_timeout_sec = int(coalesce(args.idle_timeout_sec, latest_entry.get("idleTimeoutSec") if latest_entry else DEFAULT_IDLE_TIMEOUT_SEC))
+    notify_min_interval_sec = int(
+        coalesce(
+            getattr(args, "notify_min_interval_sec", None),
+            latest_entry.get("notifyMinIntervalSec") if latest_entry and latest_entry.get("notifyMinIntervalSec") is not None else 0,
+        )
+        or 0
+    )
+    notify_min_priority = str(coalesce(getattr(args, "notify_min_priority", None), latest_entry.get("notifyMinPriority") if latest_entry else "low") or "low")
+    notify_keywords = list(coalesce(getattr(args, "notify_keyword", None), latest_entry.get("notifyKeywords") if latest_entry else []) or [])
+    notify_filter_critical = bool(coalesce(getattr(args, "notify_filter_critical", None), latest_entry.get("notifyFilterCritical") if latest_entry else False))
     watch_message_limit = int(coalesce(args.watch_message_limit, latest_entry.get("watchMessageLimit") if latest_entry else DEFAULT_MESSAGE_LIMIT))
     watch_timeout_sec = int(coalesce(args.watch_timeout_sec, latest_entry.get("watchTimeoutSec") if latest_entry else DEFAULT_TIMEOUT_SEC))
 
@@ -1410,6 +1874,10 @@ def resolve_continue_watcher_request(
         watch_live=watch_live,
         watch_interval_sec=watch_interval_sec,
         idle_timeout_sec=idle_timeout_sec,
+        notify_min_interval_sec=notify_min_interval_sec,
+        notify_min_priority=notify_min_priority,
+        notify_keywords=notify_keywords,
+        notify_filter_critical=notify_filter_critical,
         watch_message_limit=watch_message_limit,
         watch_timeout_sec=watch_timeout_sec,
     )
@@ -1561,7 +2029,7 @@ def list_sessions_command(args: argparse.Namespace) -> dict[str, Any]:
             if entry.get("watcherStatus") == "running"
         }
         normalized_sessions = [
-            build_session_summary(session, watcher_entry=watcher_by_session_id.get(session.get("id")))
+            build_session_summary(session, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_by_session_id.get(session.get("id")))
             for session in sessions
             if isinstance(session, dict)
         ]
@@ -1606,6 +2074,7 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
         "inspection": build_inspection(
             session_data,
             snapshot,
+            opencode_base_url=args.opencode_base_url,
             watcher_entry=watcher_entry,
             requested_message_limit=args.watch_message_limit,
         ),
@@ -1651,6 +2120,7 @@ def inspect_history_command(args: argparse.Namespace) -> dict[str, Any]:
     history = build_history_detail(
         session_data,
         messages,
+        opencode_base_url=args.opencode_base_url,
         watcher_entry=watcher_entry,
         message_limit=args.history_message_limit,
         selected_message_id=args.message_id,
@@ -1681,6 +2151,12 @@ def list_watchers_command(args: argparse.Namespace) -> dict[str, Any]:
 
 def start_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
+    first_prompt = resolve_prompt_input(
+        args.first_prompt,
+        getattr(args, "first_prompt_file", None),
+        text_flag="--first-prompt",
+        file_flag="--first-prompt-file",
+    )
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=args.watch_timeout_sec)
     created_session = client.create_session(directory=args.opencode_workspace, title=args.title)
@@ -1693,7 +2169,7 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
     client.prompt_session(
         opencode_session_id,
         directory=args.opencode_workspace,
-        parts=[{"type": "text", "text": args.first_prompt}],
+        parts=[{"type": "text", "text": first_prompt["text"]}],
         asynchronous=True,
     )
 
@@ -1709,17 +2185,23 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_live=args.watch_live,
         watch_interval_sec=args.watch_interval_sec,
         idle_timeout_sec=args.idle_timeout_sec,
+        notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
+        notify_min_priority=getattr(args, "notify_min_priority", "low"),
+        notify_keywords=getattr(args, "notify_keyword", []),
+        notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
         watch_message_limit=args.watch_message_limit,
         watch_timeout_sec=args.watch_timeout_sec,
     )
 
     result = {
         "kind": "opencode_manager_start_v1",
-        "opencodeSession": build_session_summary(created_session, watcher_entry=watcher_entry),
+        "opencodeSession": build_session_summary(created_session, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_entry),
         "firstPrompt": {
             "deliveryMode": "prompt_async",
             "accepted": True,
-            "promptPreview": preview_text(args.first_prompt),
+            "inputMethod": first_prompt["inputMethod"],
+            "promptFile": first_prompt.get("promptFile"),
+            "promptPreview": preview_text(first_prompt["text"]),
         },
         "watcher": build_watcher_summary(watcher_entry),
         "registryPath": str(registry_path),
@@ -1754,6 +2236,10 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_live=args.watch_live,
         watch_interval_sec=args.watch_interval_sec,
         idle_timeout_sec=args.idle_timeout_sec,
+        notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
+        notify_min_priority=getattr(args, "notify_min_priority", "low"),
+        notify_keywords=getattr(args, "notify_keyword", []),
+        notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
         watch_message_limit=args.watch_message_limit,
         watch_timeout_sec=args.watch_timeout_sec,
     )
@@ -1762,11 +2248,12 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
 
     return {
         "kind": "opencode_manager_attach_v1",
-        "opencodeSession": build_session_summary(session_data, watcher_entry=watcher_entry),
+        "opencodeSession": build_session_summary(session_data, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_entry),
         "watcher": build_watcher_summary(watcher_entry),
         "inspection": build_inspection(
             session_data,
             snapshot,
+            opencode_base_url=args.opencode_base_url,
             watcher_entry=watcher_entry,
             requested_message_limit=args.watch_message_limit,
         ),
@@ -1777,6 +2264,12 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
 
 def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
+    follow_up_prompt = resolve_prompt_input(
+        args.follow_up_prompt,
+        getattr(args, "follow_up_prompt_file", None),
+        text_flag="--follow-up-prompt",
+        file_flag="--follow-up-prompt-file",
+    )
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     timeout = args.watch_timeout_sec if args.watch_timeout_sec is not None else DEFAULT_TIMEOUT_SEC
     client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=timeout)
@@ -1789,7 +2282,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     client.prompt_session(
         args.opencode_session_id,
         directory=args.opencode_workspace or session_data.get("directory"),
-        parts=[{"type": "text", "text": args.follow_up_prompt}],
+        parts=[{"type": "text", "text": follow_up_prompt["text"]}],
         asynchronous=True,
     )
 
@@ -1807,7 +2300,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
                 }
 
     watcher_entry = watcher_payload["watcher"] if watcher_payload else None
-    session_summary = build_session_summary(session_data, watcher_entry=watcher_entry)
+    session_summary = build_session_summary(session_data, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_entry)
 
     result = {
         "kind": "opencode_manager_continue_v1",
@@ -1815,7 +2308,9 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         "followUpPrompt": {
             "deliveryMode": "prompt_async",
             "accepted": True,
-            "promptPreview": preview_text(args.follow_up_prompt),
+            "inputMethod": follow_up_prompt["inputMethod"],
+            "promptFile": follow_up_prompt.get("promptFile"),
+            "promptPreview": preview_text(follow_up_prompt["text"]),
         },
         "ensureWatcherRequested": bool(args.ensure_watcher),
         "registryPath": str(registry_path),
@@ -1826,6 +2321,76 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=bool(args.ensure_watcher)))
     return result
 
+
+
+def stop_session_command(args: argparse.Namespace) -> dict[str, Any]:
+    registry_path = Path(args.registry_path).expanduser().resolve()
+    resolved_opencode_token = resolve_opencode_token(args.opencode_token, getattr(args, "opencode_token_env", None))
+    timeout = args.watch_timeout_sec if args.watch_timeout_sec is not None else DEFAULT_TIMEOUT_SEC
+    client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=timeout)
+    session_data = ensure_session_exists(
+        client,
+        opencode_session_id=args.opencode_session_id,
+        opencode_workspace=None,
+    )
+    opencode_workspace = resolve_stop_session_workspace(
+        requested_workspace=args.opencode_workspace,
+        session_data=session_data,
+    )
+
+    abort_requested_at_ms = int(time.time() * 1000)
+    abort_result = client.abort_session(args.opencode_session_id, directory=opencode_workspace)
+
+    with locked_registry(registry_path) as (registry, _path):
+        refresh_registry_entries(registry, registry_path=registry_path)
+        watcher_entry = next(
+            (
+                entry
+                for entry in registry.get("watchers") or []
+                if entry.get("opencodeSessionId") == args.opencode_session_id and entry.get("watcherStatus") == "running"
+            ),
+            None,
+        )
+
+    abort_accepted = True if isinstance(abort_result, dict) else bool(abort_result)
+    verification = verify_stop_session_attempt(
+        client,
+        session_id=args.opencode_session_id,
+        directory=opencode_workspace,
+        abort_requested_at_ms=abort_requested_at_ms,
+        verify_wait_sec=getattr(args, "verify_wait_sec", 3.0),
+        verify_poll_sec=getattr(args, "verify_poll_sec", 1.0),
+    )
+    stop_verified = bool(verification.get("verified"))
+    stop_likely_failed = bool(verification.get("stopLikelyFailed"))
+    if stop_verified:
+        stop_outcome = "verified_stopped"
+    elif stop_likely_failed:
+        stop_outcome = "likely_failed"
+    else:
+        stop_outcome = "unverified"
+    result = {
+        "kind": "opencode_manager_stop_session_v1",
+        "stopMethod": "abort_api",
+        "stopOutcome": stop_outcome,
+        "stopped": stop_verified,
+        "abortAccepted": abort_accepted,
+        "abortResult": abort_result,
+        "abortRequestedAt": iso_from_epoch_ms(abort_requested_at_ms),
+        "stopVerified": stop_verified,
+        "stopLikelyFailed": stop_likely_failed,
+        "verification": verification,
+        "opencodeSession": build_session_summary(
+            session_data,
+            opencode_base_url=args.opencode_base_url,
+            watcher_entry=watcher_entry,
+        ),
+        "watcherStillAttached": bool(watcher_entry),
+        "registryPath": str(registry_path),
+    }
+    if watcher_entry:
+        result["watcher"] = build_watcher_summary(watcher_entry)
+    return result
 
 
 def stop_watcher_command(args: argparse.Namespace) -> dict[str, Any]:
@@ -1947,6 +2512,11 @@ def add_common_runtime_options(
     command_parser.add_argument("--watch-live", action="store_true")
     command_parser.add_argument("--watch-interval-sec", type=int, default=DEFAULT_WATCH_INTERVAL_SEC)
     command_parser.add_argument("--idle-timeout-sec", type=int, default=DEFAULT_IDLE_TIMEOUT_SEC)
+    command_parser.add_argument("--notify-min-interval-sec", type=int, default=0)
+    command_parser.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default="low")
+    command_parser.add_argument("--notify-min-severity", dest="notify_min_priority", choices=("low", "normal", "high"))
+    command_parser.add_argument("--notify-keyword", action="append", default=[])
+    command_parser.add_argument("--notify-filter-critical", action="store_true")
     command_parser.add_argument("--watch-message-limit", type=int, default=DEFAULT_MESSAGE_LIMIT)
     command_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     command_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
@@ -1961,6 +2531,12 @@ def add_continue_watcher_options(command_parser: argparse.ArgumentParser) -> Non
     command_parser.add_argument("--watch-dry-run", dest="watch_live", action="store_const", const=False)
     command_parser.add_argument("--watch-interval-sec", type=int)
     command_parser.add_argument("--idle-timeout-sec", type=int)
+    command_parser.add_argument("--notify-min-interval-sec", type=int)
+    command_parser.add_argument("--notify-min-priority", choices=("low", "normal", "high"))
+    command_parser.add_argument("--notify-min-severity", dest="notify_min_priority", choices=("low", "normal", "high"))
+    command_parser.add_argument("--notify-keyword", action="append")
+    command_parser.add_argument("--notify-filter-critical", dest="notify_filter_critical", action="store_const", const=True, default=None)
+    command_parser.add_argument("--notify-preserve-critical", dest="notify_filter_critical", action="store_const", const=False)
     command_parser.add_argument("--watch-message-limit", type=int)
     command_parser.add_argument("--watch-timeout-sec", type=int)
     command_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
@@ -1976,16 +2552,40 @@ def add_watcher_target_options(command_parser: argparse.ArgumentParser) -> None:
 
 
 
+def add_prompt_options(
+    command_parser: argparse.ArgumentParser,
+    *,
+    text_flag: str,
+    file_flag: str,
+    text_help: str,
+    file_help: str,
+) -> None:
+    prompt_group = command_parser.add_mutually_exclusive_group(required=True)
+    prompt_group.add_argument(text_flag, help=text_help)
+    prompt_group.add_argument(file_flag, help=file_help)
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Phase 2 OpenCode manager: create or attach watchers, continue existing sessions, inspect state, drill into recent history, stop/detach watchers, and recover local watcher registry entries."
+        description="Phase 2 OpenCode manager: create or attach watchers, continue existing sessions, inspect state, drill into recent history, request a real OpenCode session stop via abort API, stop/detach watchers, and recover local watcher registry entries."
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    start_parser = sub.add_parser("start", help="create a new OpenCode session, send the first prompt, and attach a watcher")
+    start_parser = sub.add_parser(
+        "start",
+        help="create a new OpenCode session, send the first prompt, and attach a watcher",
+        description="Create a new OpenCode session, send the first prompt (inline or via --first-prompt-file), and attach a watcher.",
+    )
     add_common_runtime_options(start_parser, require_openclaw_session_key=True, require_workspace=True)
     start_parser.add_argument("--title")
-    start_parser.add_argument("--first-prompt", required=True)
+    add_prompt_options(
+        start_parser,
+        text_flag="--first-prompt",
+        file_flag="--first-prompt-file",
+        text_help="inline first prompt text",
+        file_help="read first prompt text from a UTF-8 file path or '-' for stdin",
+    )
     start_parser.set_defaults(func=start_command)
 
     attach_parser = sub.add_parser("attach", help="attach a watcher to an existing OpenCode session")
@@ -1994,15 +2594,21 @@ def build_parser() -> argparse.ArgumentParser:
 
     continue_parser = sub.add_parser(
         "continue",
-        help="send --follow-up-prompt to an existing OpenCode session and optionally ensure a watcher via --ensure-watcher",
-        description="Send --follow-up-prompt to an existing OpenCode session and optionally ensure a watcher via --ensure-watcher.",
+        help="send a follow-up prompt to an existing OpenCode session; normal agent usage should also ensure watcher routing via --ensure-watcher",
+        description="Send a follow-up prompt (inline or via --follow-up-prompt-file) to an existing OpenCode session. For normal conversation-driven agent usage, also pass --ensure-watcher so later progress keeps routing back to the originating OpenClaw session; omit it only for explicit no-watcher/debug intent.",
     )
     continue_parser.add_argument("--opencode-base-url", required=True)
     continue_parser.add_argument("--opencode-token")
     continue_parser.add_argument("--opencode-token-env")
     continue_parser.add_argument("--opencode-workspace")
     continue_parser.add_argument("--opencode-session-id", required=True)
-    continue_parser.add_argument("--follow-up-prompt", required=True)
+    add_prompt_options(
+        continue_parser,
+        text_flag="--follow-up-prompt",
+        file_flag="--follow-up-prompt-file",
+        text_help="inline follow-up prompt text",
+        file_help="read follow-up prompt text from a UTF-8 file path or '-' for stdin",
+    )
     add_continue_watcher_options(continue_parser)
     continue_parser.set_defaults(func=continue_command)
 
@@ -2045,6 +2651,22 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_history_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     inspect_history_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
     inspect_history_parser.set_defaults(func=inspect_history_command)
+
+    stop_session_parser = sub.add_parser(
+        "stop-session",
+        help="request a real OpenCode stop via POST /session/{id}/abort, validate scope, and verify whether it actually reached a stopped terminal state",
+        description="Request a real OpenCode stop via the verified abort API instead of sending a pause-like follow-up prompt. If a watcher is already attached, leave it running so it can observe the resulting terminal state; use stop-watcher or detach separately only when monitoring should also stop. The manager rejects an explicit --opencode-workspace mismatch before aborting, and it performs post-abort verification because upstream abort acceptance / busy-clearing does not always mean the underlying tool run truly stopped; results are reported as verified, unverified, or likely failed rather than assuming success.",
+    )
+    stop_session_parser.add_argument("--opencode-base-url", required=True)
+    stop_session_parser.add_argument("--opencode-token")
+    stop_session_parser.add_argument("--opencode-token-env")
+    stop_session_parser.add_argument("--opencode-workspace")
+    stop_session_parser.add_argument("--opencode-session-id", required=True)
+    stop_session_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
+    stop_session_parser.add_argument("--verify-wait-sec", type=float, default=3.0)
+    stop_session_parser.add_argument("--verify-poll-sec", type=float, default=1.0)
+    stop_session_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
+    stop_session_parser.set_defaults(func=stop_session_command)
 
     watchers_parser = sub.add_parser("list-watchers", help="show watcher registry entries")
     watchers_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))

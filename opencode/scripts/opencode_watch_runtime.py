@@ -133,6 +133,18 @@ def optional_config_bool(config: dict[str, Any], default: bool, *keys: str) -> b
     raise ValueError(f"config field {expected} must be a boolean")
 
 
+def optional_config_string_list(config: dict[str, Any], *keys: str) -> list[str]:
+    value = config_value(config, *keys)
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list) and all(isinstance(item, str) for item in value):
+        return [item.strip() for item in value if item.strip()]
+    expected = " or ".join(repr(key) for key in keys)
+    raise ValueError(f"config field {expected} must be a string or a list of strings")
+
+
 def resolve_token(config: dict[str, Any]) -> str | None:
     token = optional_config_string(config, "opencodeToken", "token")
     token_env = optional_config_string(config, "opencodeTokenEnv", "token_env")
@@ -172,6 +184,16 @@ def build_watch_command(paths: RuntimePaths, config: dict[str, Any], *, once: bo
     token = resolve_token(config)
     if token:
         command += ["--token", token]
+
+    notify_min_interval_sec = optional_config_int(config, 0, "notifyMinIntervalSec", "notify_min_interval_sec")
+    notify_min_priority = optional_config_string(config, "notifyMinPriority", "notify_min_priority", "notifyMinSeverity", "notify_min_severity") or "low"
+    notify_keywords = optional_config_string_list(config, "notifyKeywords", "notify_keywords")
+    notify_filter_critical = optional_config_bool(config, False, "notifyFilterCritical", "notify_filter_critical")
+    command += ["--notify-min-interval-sec", str(notify_min_interval_sec), "--notify-min-priority", notify_min_priority]
+    for keyword in notify_keywords:
+        command += ["--notify-keyword", keyword]
+    if notify_filter_critical:
+        command.append("--notify-filter-critical")
 
     live = optional_config_bool(config, False, "watchLive", "live") if live_override is None else live_override
     if live:

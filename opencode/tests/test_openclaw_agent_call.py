@@ -64,20 +64,37 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertEqual(plan["gatewayParams"]["sessionKey"], plan["sessionKey"])
         self.assertTrue(plan["gatewayParams"]["deliver"])
         self.assertTrue(plan["gatewayParams"]["idempotencyKey"].startswith("opencode-origin-handoff-"))
-        self.assertIn("Runtime task update for the current conversation.", plan["gatewayParams"]["message"])
-        self.assertIn("lightweight runtime signal", plan["gatewayParams"]["message"])
-        self.assertIn("one one-off inspect", plan["gatewayParams"]["message"])
-        self.assertIn("speak from that current state", plan["gatewayParams"]["message"])
-        self.assertIn("do not start or attach a watcher", plan["gatewayParams"]["message"])
-        self.assertIn("opencode_manager.py inspect", plan["gatewayParams"]["message"])
-        self.assertIn("local-defaults.env", plan["gatewayParams"]["message"])
-        self.assertIn("same task cluster", plan["gatewayParams"]["message"])
-        self.assertIn("do not send another visible reply", plan["gatewayParams"]["message"])
-        self.assertIn(
-            "handoff mechanics, routing details, transport details, prompt mechanics, verbatim signal payload",
-            plan["gatewayParams"]["message"],
+        message = plan["gatewayParams"]["message"]
+        self.assertIn("<opencodeEvent>", message)
+        self.assertIn("</opencodeEvent>", message)
+        self.assertIn("OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1", message)
+        preamble, wrapped_event = message.split("<opencodeEvent>\n", 1)
+        self.assertEqual(
+            [line for line in preamble.splitlines() if line.strip()],
+            [
+                "Internal runtime signal for the current conversation.",
+                "Inspect ses_release_demo once, then base any visible reply on that inspected current state rather than this event text.",
+                "Prefer rehydration.currentState and rehydration.sinceLatestUserInput from that inspect.",
+                "If inspect alone still leaves a real gap, proactively run one targeted inspect-history drill-down (usually --recent-index 0/1/2, or --message-id when the inspection already points to one).",
+                "Use that drill-down for both relevant older history and 'what happened between inspect points?' questions, especially recent shell/tool output or stdout tail lines.",
+                "Do not fetch broad history by default; only do the narrow lookup needed to answer.",
+                "Do not start or attach a watcher, and do not keep polling from this session.",
+                "Reply visibly only if the inspected current state adds net-new user-visible progress for this task cluster.",
+                "A newer user input inside the OpenCode session does not reset same-cluster reply allowances in this chat.",
+                "Small exception: when rehydration.sinceLatestUserInput.assistantMessageCount == 0 and the inspected state is still running with meaningful progress, you may send one short visible progress reply for this task cluster.",
+                "Across one same-cluster chain, prefer at most one visible running/progress reply and at most one visible terminal completion/failure reply.",
+                "Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.",
+                "If this chat already received a visible same-cluster terminal/status reply, later same-cluster terminal/status updates are NO_REPLY unless the earlier reply was clearly wrong.",
+                "After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.",
+                "When suppressing, output the single token NO_REPLY and nothing else—no explanation, prefix, suffix, bullets, or code fences.",
+            ],
         )
-        self.assertIn("OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1", plan["gatewayParams"]["message"])
+        self.assertTrue(wrapped_event.endswith("\n</opencodeEvent>"))
+        self.assertNotIn("lightweight runtime signal", message)
+        self.assertNotIn("one one-off inspect", message)
+        self.assertNotIn("opencode_manager.py inspect", message)
+        self.assertNotIn("local-defaults.env", message)
+        self.assertNotIn("handoff mechanics", message)
         self.assertEqual(plan["argv"][:4], ["openclaw", "gateway", "call", "agent"])
         self.assertIn("--timeout", plan["argv"])
         self.assertIn("15000", plan["argv"])
@@ -87,6 +104,31 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertIn("openclaw gateway call agent", plan["shellCommand"])
         self.assertFalse(plan["executed"])
         self.assertIsNone(plan["execution"])
+
+    def test_non_cluster_handoff_omits_progress_exception_guidance(self):
+        turn = self.ready_turn()
+        turn.pop("taskCluster", None)
+
+        handoff = self.ready_handoff(turn=turn)
+        plan = build_gateway_agent_call(handoff, timeout_ms=15000)
+        message = plan["gatewayParams"]["message"]
+
+        self.assertNotIn("assistantMessageCount == 0", message)
+        self.assertNotIn("same-cluster progress reply", message)
+        self.assertIn("Inspect ses_release_demo once", message)
+
+    def test_same_cluster_guidance_preserves_first_terminal_reply(self):
+        plan = build_gateway_agent_call(self.ready_handoff(), timeout_ms=15000)
+        message = plan["gatewayParams"]["message"]
+
+        self.assertIn(
+            "Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.",
+            message,
+        )
+        self.assertIn(
+            "After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.",
+            message,
+        )
 
     def test_idempotency_key_ignores_cadence_only_changes(self):
         first_turn = self.ready_turn()

@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, drill into one recent message when needed, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage; use `scripts/opencodectl.py turn/watch/...` only for runtime wiring or debugging. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user.
+description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, drill into one recent message when needed, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage. For agent-driven `start` / `continue`, ensure watcher routing by default so progress returns to the originating OpenClaw session; only omit watcher setup when the user explicitly wants no watcher or you are doing runtime/debug work. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user. When OpenCode should stop, always use the real `stop-session` command / abort API; stopping the OpenCode session should not also stop the watcher unless the user explicitly asks to stop monitoring or detach it.
 ---
 
 # Opencode
@@ -34,6 +34,7 @@ Normal usage commands:
 - `start`
 - `attach`
 - `continue`
+- `stop-session`
 - `list-sessions`
 - `inspect`
 - `inspect-history`
@@ -46,20 +47,33 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 
 ### 4) Quick chooser
 
-- Fresh work in a workspace -> `start`
+- Fresh work in a workspace -> `start` (normal path: this already creates/attaches the watcher for the provided OpenClaw session; do not treat watcher startup as a separate optional step after `start`)
 - Need to find an existing session first -> `list-sessions`
 - Need current state of one existing session -> `inspect` (now returns a compact `rehydration` block for takeover/current-state rebuild)
-- Need more detail on one recent message/event after inspect/attach -> `inspect-history` (`--recent-index 0` = latest, or use `--message-id`)
-- Need to send more work into an existing session -> `continue`
-- Need watcher routing back to this OpenClaw session -> `attach` or `continue --ensure-watcher` (`attach` now also returns the same immediate inspection/rehydration payload)
+- Need more detail on one recent message/event after inspect/attach, including recent shell output or what happened between inspect points -> `inspect-history` (`--recent-index 0` = latest, then 1/2 if needed, or use `--message-id`)
+- Need to send more work into an existing session -> `continue --ensure-watcher` by default (omit watcher setup only if the user explicitly wants no watcher / no routed progress, or you are doing narrow runtime debugging)
+- Need to really stop the OpenCode run itself -> `stop-session` (real abort API, not a pause-like follow-up prompt; keep any watcher attached unless the user explicitly asks to stop monitoring too; if `--opencode-workspace` is supplied it must match the session's actual directory)
+- Need watcher routing back to this OpenClaw session for an existing session -> `attach` or `continue --ensure-watcher` (`attach` now also returns the same immediate inspection/rehydration payload)
 - Need to see watcher bindings -> `list-watchers`
-- Need to stop monitoring only -> `stop-watcher`
-- Need to remove the OpenClaw binding -> `detach`
+- Need to stop monitoring only -> `stop-watcher` (only when the user explicitly asks to stop the watcher)
+- Need to remove the OpenClaw binding -> `detach` (only when the user explicitly asks to detach / stop monitoring)
+
+Hard rule: if you want OpenCode to stop, use `stop-session`. Do not send a natural-language follow-up prompt like “please stop”, “pause here”, or “hold off for now” and assume that means the run is really stopped. Use the actual stop command / abort API.
+
+Important caveat: upstream abort acceptance is not the same as a verified hard stop. In current live behavior, `/session/{id}/abort` can return success and clear the busy flag while the underlying tool/shell work still continues and later completes normally. Treat `stop-session` as “abort + verify”, not “abort call returned true so the session is definitely dead”. The manager should report the result as verified, unverified, or likely failed, and an explicit workspace mismatch must be rejected before abort rather than silently proceeding.
+
+Default lifecycle rule: OpenCode session lifecycle and watcher lifecycle are separate. Starting / continuing work should normally ensure a watcher is live for the originating OpenClaw session. Stopping work should normally stop only the OpenCode session; use `stop-watcher` or `detach` only when the user explicitly asks to stop monitoring.
+
+Watcher notification shaping is available when token churn matters: use `--notify-min-interval-sec` to rate-limit non-critical updates, `--notify-min-priority` to suppress low-priority non-critical updates, and repeated `--notify-keyword` filters to forward only matching non-critical updates. Critical updates (failed / blocked / completed) bypass these non-critical filters by default.
 
 Key CLI facts that matter in the hot path:
 
-- `continue` uses `--follow-up-prompt`
-- `continue` can ensure routing with `--ensure-watcher`
+- `start` accepts `--first-prompt` or the safer `--first-prompt-file` (`-` = stdin); prefer file/stdin when the prompt is long, multiline, or shell-sensitive, and treat watcher startup as part of the normal `start` path
+- `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin)
+- for normal agent usage, `continue` should include `--ensure-watcher` so routing back to the originating OpenClaw session is preserved; omit it only for explicit no-watcher/debug intent
+- `stop-session` calls the verified real abort API instead of faking a stop with another prompt, and by default should leave the watcher running so it can observe/report the terminal state
+- if the goal is to stop, never substitute a “please stop/pause” follow-up prompt for `stop-session`; prompts can still leave internal continuation behavior, while the real stop command cleanly aborts the run
+- manager session objects now return `opencodeUiUrl`; the usable UI URL format is `<base-url>/<base64url(workspace-no-padding)>/session/<sessionId>`, not `<base-url>/session/<sessionId>`
 - `detach` removes the watcher binding without deleting the OpenCode session
 
 ### 5) The manager handoff contract is authoritative
@@ -99,9 +113,11 @@ Do not echo raw `systemEvent`, JSON, headers, tags, or watcher wording.
 Use this rule set:
 
 - Read `runtimeSignal` before anything else.
-- Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and `inspect-history`.
+- Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and targeted `inspect-history` drill-down when needed.
 - If `runtimeSignal.action=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` for that `opencodeSessionId`, then speak from the inspected current state.
-- After that one inspect, do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
+- If that inspect still leaves a real gap, proactively do **one narrow** `inspect-history` lookup yourself—usually `--recent-index 0`, then `1`/`2` if needed, or `--message-id` when the inspection already points to the exact message.
+- Use `inspect-history` both for older relevant history and for “what happened between inspect points?” questions such as recent shell/tool output, stdout tail lines, or read/write/patch details.
+- After that one inspect (plus at most the narrow gap-filling drill-down above), do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
 - For one task cluster, prefer at most **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
 - Same-state / repeated `completed` / low-value updates should usually stay silent.
 

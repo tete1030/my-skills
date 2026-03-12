@@ -146,6 +146,8 @@ def cmd_watch(args) -> int:
         "--no-change-visible-after-min", str(args.no_change_visible_after_min),
         "--interval-sec", str(args.interval_sec),
         "--idle-timeout-sec", str(args.idle_timeout_sec),
+        "--notify-min-interval-sec", str(args.notify_min_interval_sec),
+        "--notify-min-priority", args.notify_min_priority,
     ]
     if args.origin_session:
         command += ["--origin-session", args.origin_session]
@@ -153,6 +155,8 @@ def cmd_watch(args) -> int:
         command += ["--origin-target", args.origin_target]
     if args.token:
         command += ["--token", args.token]
+    for keyword in args.notify_keyword:
+        command += ["--notify-keyword", keyword]
     if args.loop:
         command.append("--loop")
     if args.live:
@@ -279,6 +283,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_watch.add_argument("--interval-sec", type=int, default=60)
     p_watch.add_argument("--idle-timeout-sec", type=int, default=0)
+    p_watch.add_argument("--notify-min-interval-sec", type=int, default=0)
+    p_watch.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default="low")
+    p_watch.add_argument("--notify-min-severity", dest="notify_min_priority", choices=("low", "normal", "high"))
+    p_watch.add_argument("--notify-keyword", action="append", default=[])
+    p_watch.add_argument("--notify-filter-critical", action="store_true")
     p_watch.add_argument("--loop", action="store_true")
     p_watch.add_argument("--live", action="store_true")
     p_watch.set_defaults(func=cmd_watch)

@@ -104,6 +104,10 @@ class WatchRuntimeTests(unittest.TestCase):
             "openclawDeliveryTarget": "telegram:-100123:topic:42",
             "watchIntervalSec": 15,
             "idleTimeoutSec": 900,
+            "notifyMinIntervalSec": 300,
+            "notifyMinSeverity": "normal",
+            "notifyKeywords": ["deploy", "release"],
+            "notifyFilterCritical": True,
             "watchLive": True,
         }
 
@@ -113,6 +117,12 @@ class WatchRuntimeTests(unittest.TestCase):
         self.assertIn("--live", command)
         self.assertIn("--idle-timeout-sec", command)
         self.assertIn("900", command)
+        self.assertIn("--notify-min-interval-sec", command)
+        self.assertIn("300", command)
+        self.assertIn("--notify-min-priority", command)
+        self.assertIn("normal", command)
+        self.assertIn("--notify-filter-critical", command)
+        self.assertEqual(command.count("--notify-keyword"), 2)
         self.assertIn("--origin-session", command)
         self.assertIn("agent:main:telegram:group:-100123:topic:42", command)
 

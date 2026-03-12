@@ -15,6 +15,8 @@ SCRIPT_DIR = Path(__file__).resolve().parent
 OPENCODECTL = SCRIPT_DIR / "opencodectl.py"
 WATCH_STATE_KEY = "watchRunner"
 TERMINAL_OR_IDLE_STATUSES = {"completed", "failed", "blocked", "deviated", "stalled", "idle"}
+PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
+CRITICAL_UPDATE_TYPES = {"completed", "failed", "blocked"}
 
 
 def now_utc() -> datetime:
@@ -122,37 +124,99 @@ def idle_timeout_reason(turn: dict[str, Any]) -> str | None:
     return None
 
 
+def notification_meta_for(handoff: dict[str, Any], turn: dict[str, Any], task_cluster: dict[str, Any]) -> dict[str, Any]:
+    fact = turn.get("factSkeleton") if isinstance(turn.get("factSkeleton"), dict) else {}
+    update_type = str(handoff.get("updateType") or "progress").strip().lower()
+    priority = str(handoff.get("priority") or "low").strip().lower()
+    preview = str(fact.get("latestMeaningfulPreview") or "").strip()
+    phase = str(fact.get("phase") or "").strip()
+    status = str(fact.get("status") or "").strip().lower()
+    summary = str(task_cluster.get("summary") or "").strip()
+    searchable_parts = [status, phase, preview, summary]
+    searchable_text = "\n".join(part for part in searchable_parts if part)
+    is_critical = update_type in CRITICAL_UPDATE_TYPES or priority == "high"
+    return {
+        "updateType": update_type,
+        "priority": priority if priority in PRIORITY_RANK else "low",
+        "searchableText": searchable_text,
+        "critical": is_critical,
+    }
+
+
+
+def priority_allows(meta: dict[str, Any], *, min_priority: str) -> bool:
+    actual = PRIORITY_RANK.get(meta.get("priority") or "low", 0)
+    required = PRIORITY_RANK.get(min_priority, 0)
+    return actual >= required
+
+
+
+def keyword_allows(meta: dict[str, Any], *, keywords: list[str]) -> bool:
+    if not keywords:
+        return True
+    haystack = str(meta.get("searchableText") or "").lower()
+    if not haystack:
+        return False
+    return any(keyword in haystack for keyword in keywords)
+
+
+
+def rate_limit_allows(watch_state: dict[str, Any], *, min_interval_sec: int) -> tuple[bool, float | None]:
+    if min_interval_sec <= 0:
+        return True, None
+    last_visible = parse_iso_timestamp(watch_state.get("lastVisibleNotificationAt") or watch_state.get("lastExecutedAt"))
+    if last_visible is None:
+        return True, None
+    elapsed = (now_utc() - last_visible).total_seconds()
+    return elapsed >= min_interval_sec, elapsed
+
+
+
 def decide_watch_action(
     agent_call: dict[str, Any],
     watch_state: dict[str, Any],
     *,
     live: bool,
     task_cluster: dict[str, Any] | None = None,
+    handoff: dict[str, Any] | None = None,
+    turn: dict[str, Any] | None = None,
+    notify_min_interval_sec: int = 0,
+    notify_min_priority: str = "low",
+    notify_keywords: list[str] | None = None,
+    notify_filter_critical: bool = False,
 ) -> dict[str, Any]:
     delivery_action = agent_call.get("deliveryAction")
     route_status = agent_call.get("routeStatus")
     action_key = action_key_from_agent_call(agent_call)
     normalized_cluster = normalize_task_cluster(task_cluster)
+    notify_keywords = [str(item).strip().lower() for item in (notify_keywords or []) if str(item).strip()]
+
+    base = {
+        "mode": "live" if live else "dry-run",
+        "duplicateSuppressed": False,
+        "supersededSuppressed": False,
+        "rateLimited": False,
+        "priorityFiltered": False,
+        "keywordFiltered": False,
+        "notificationMeta": None,
+        "actionKey": action_key,
+    }
 
     if delivery_action != "inject" or route_status != "ready":
         return {
-            "mode": "live" if live else "dry-run",
+            **base,
             "operation": "skip",
             "shouldExecute": False,
-            "duplicateSuppressed": False,
-            "supersededSuppressed": False,
-            "actionKey": action_key,
             "reason": agent_call.get("reason") or "not_ready",
         }
 
     if live and action_key and watch_state.get("lastExecutedActionKey") == action_key:
         return {
+            **base,
             "mode": "live",
             "operation": "skip_duplicate",
             "shouldExecute": False,
             "duplicateSuppressed": True,
-            "supersededSuppressed": False,
-            "actionKey": action_key,
             "reason": "duplicate_action_key",
         }
 
@@ -160,22 +224,54 @@ def decide_watch_action(
         current_head = task_cluster_head_for_key(watch_state, normalized_cluster)
         if current_head.get("key") and task_cluster_is_superseded(normalized_cluster, current_head):
             return {
+                **base,
                 "mode": "live",
                 "operation": "skip_superseded",
                 "shouldExecute": False,
-                "duplicateSuppressed": False,
                 "supersededSuppressed": True,
-                "actionKey": action_key,
                 "reason": "superseded_task_cluster_update",
             }
 
+    meta = notification_meta_for(handoff or {}, turn or {}, normalized_cluster)
+    if notify_filter_critical or not meta["critical"]:
+        if not priority_allows(meta, min_priority=notify_min_priority):
+            return {
+                **base,
+                "mode": "live" if live else "dry-run",
+                "operation": "skip_filtered_priority",
+                "shouldExecute": False,
+                "priorityFiltered": True,
+                "notificationMeta": meta,
+                "reason": f"priority<{notify_min_priority}",
+            }
+        if notify_keywords and not keyword_allows(meta, keywords=notify_keywords):
+            return {
+                **base,
+                "mode": "live" if live else "dry-run",
+                "operation": "skip_filtered_keywords",
+                "shouldExecute": False,
+                "keywordFiltered": True,
+                "notificationMeta": meta,
+                "reason": "keyword_filter_miss",
+            }
+        allowed_by_interval, elapsed = rate_limit_allows(watch_state, min_interval_sec=notify_min_interval_sec)
+        if not allowed_by_interval:
+            return {
+                **base,
+                "mode": "live" if live else "dry-run",
+                "operation": "skip_rate_limited",
+                "shouldExecute": False,
+                "rateLimited": True,
+                "notificationMeta": {**meta, "elapsedSec": elapsed, "minIntervalSec": notify_min_interval_sec},
+                "reason": f"notify_min_interval<{notify_min_interval_sec}s",
+            }
+
     return {
+        **base,
         "mode": "live" if live else "dry-run",
         "operation": "execute" if live else "plan",
         "shouldExecute": bool(live),
-        "duplicateSuppressed": False,
-        "supersededSuppressed": False,
-        "actionKey": action_key,
+        "notificationMeta": meta,
         "reason": "ready_inject_live" if live else "ready_inject_dry_run",
     }
 
@@ -214,6 +310,10 @@ def update_watch_state(
         "lastDeliveryAction": agent_call.get("deliveryAction"),
         "lastDuplicateSuppressed": bool(watch_action.get("duplicateSuppressed")),
         "lastSupersededSuppressed": bool(watch_action.get("supersededSuppressed")),
+        "lastRateLimited": bool(watch_action.get("rateLimited")),
+        "lastPriorityFiltered": bool(watch_action.get("priorityFiltered")),
+        "lastKeywordFiltered": bool(watch_action.get("keywordFiltered")),
+        "lastNotificationMeta": watch_action.get("notificationMeta"),
         "lastFactStatus": status,
         "lastFactPhase": fact.get("phase"),
         "lastPreview": fact.get("latestMeaningfulPreview"),
@@ -224,6 +324,18 @@ def update_watch_state(
         "lastActivitySignature": activity_signature,
     })
 
+    running_progress_observation = state_doc.get("runningProgressObservation") if isinstance(state_doc.get("runningProgressObservation"), dict) else None
+    if running_progress_observation:
+        watch_state["lastRunningProgressObservation"] = running_progress_observation
+    else:
+        watch_state.pop("lastRunningProgressObservation", None)
+
+    transport_error_hints = state_doc.get("transportErrorHints") if isinstance(state_doc.get("transportErrorHints"), list) else None
+    if transport_error_hints:
+        watch_state["lastTransportErrorHints"] = transport_error_hints
+    else:
+        watch_state.pop("lastTransportErrorHints", None)
+
     if activity_changed or not watch_state.get("lastActivityAt"):
         watch_state["lastActivityAt"] = current_time
 
@@ -233,7 +345,12 @@ def update_watch_state(
     if watch_action["operation"] == "execute":
         watch_state["lastExecutedActionKey"] = watch_action.get("actionKey")
         watch_state["lastExecutedAt"] = current_time
+        watch_state["lastVisibleNotificationAt"] = current_time
+        watch_state["suppressedNotificationCount"] = 0
         watch_state["clusterHeads"] = update_cluster_heads(watch_state, normalized_cluster)
+    elif watch_action["operation"] in {"skip_rate_limited", "skip_filtered_priority", "skip_filtered_keywords"}:
+        watch_state["suppressedNotificationCount"] = int(watch_state.get("suppressedNotificationCount", 0)) + 1
+        watch_state["lastSuppressedNotificationAt"] = current_time
 
     if idle_reason:
         previous_idle_reason = watch_state.get("idleEligibleReason")
@@ -322,7 +439,18 @@ def run_single_step(args: argparse.Namespace) -> dict[str, Any]:
 
     pre_state = load_json_file(state_path)
     watch_state = dict(pre_state.get(WATCH_STATE_KEY) or {})
-    watch_action = decide_watch_action(agent_call, watch_state, live=args.live, task_cluster=handoff.get("taskCluster"))
+    watch_action = decide_watch_action(
+        agent_call,
+        watch_state,
+        live=args.live,
+        task_cluster=handoff.get("taskCluster"),
+        handoff=handoff,
+        turn=turn,
+        notify_min_interval_sec=args.notify_min_interval_sec,
+        notify_min_priority=args.notify_min_priority,
+        notify_keywords=args.notify_keyword,
+        notify_filter_critical=args.notify_filter_critical,
+    )
 
     final_agent_call = agent_call
     if watch_action["shouldExecute"]:
@@ -376,6 +504,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
     p.add_argument("--interval-sec", type=int, default=60)
     p.add_argument("--idle-timeout-sec", type=int, default=0, help="exit after terminal/idle status stays unchanged for this many seconds; 0 disables idle exit")
+    p.add_argument("--notify-min-interval-sec", type=int, default=0, help="minimum interval for non-critical visible notifications; critical updates bypass this throttle unless --notify-filter-critical is set")
+    p.add_argument("--notify-min-priority", choices=sorted(PRIORITY_RANK), default="low", help="minimum non-critical notification priority to deliver")
+    p.add_argument("--notify-keyword", action="append", default=[], help="case-insensitive keyword filter for non-critical notifications; may be repeated")
+    p.add_argument("--notify-filter-critical", action="store_true", help="apply notify interval/priority/keyword filters to critical updates too; default preserves critical notifications")
     p.add_argument("--loop", action="store_true")
     p.add_argument("--live", action="store_true", help="execute the ready handoff after duplicate suppression; default is dry-run planning only")
     return p

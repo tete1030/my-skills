@@ -192,6 +192,35 @@ class TurnOutputTests(unittest.TestCase):
         self.assertEqual(set(result), ALLOWED_TURN_KEYS | DEBUG_ONLY_TURN_KEYS)
         self.assertEqual(result["payload"], payload)
 
+    def test_turn_result_falls_back_to_abort_error_preview_when_no_text_exists(self):
+        payload = {
+            "decision": {"decision": "visible_update", "reason": "status=failed"},
+            "observation": {"status": "failed", "phase": None, "noChange": False, "lastUpdatedMs": 123456789},
+            "after": {
+                "status": "failed",
+                "phase": None,
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "snapshot": {
+                "latestUserInputSummary": "Continue the probe.",
+                "latestMessage": {
+                    "id": "msg_abort",
+                    "role": "assistant",
+                    "status": "failed",
+                    "message.errorName": "MessageAbortedError",
+                    "message.errorMessage": "The operation was aborted.",
+                    "errorPreview": "MessageAbortedError: The operation was aborted.",
+                },
+            },
+        }
+
+        result = build_turn_result(payload)
+
+        self.assertEqual(result["factSkeleton"]["status"], "failed")
+        self.assertIn("MessageAbortedError", result["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertGreater(result["taskCluster"]["detailRank"], 0)
+
 
 if __name__ == "__main__":
     unittest.main()

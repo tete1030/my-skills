@@ -1,12 +1,13 @@
 import sys
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_remote_cycle import derive_phase, derive_status, snapshot_to_observation  # noqa: E402
-from opencode_snapshot import compact_latest_message, normalize_todo, summarize_recent_messages  # noqa: E402
+from opencode_snapshot import analyze_running_progress, compact_latest_message, normalize_todo, summarize_recent_messages  # noqa: E402
 
 
 TOOL_ONLY_COMPLETED_MESSAGE = {
@@ -66,6 +67,30 @@ USER_TEXT_MESSAGE = {
             "text": "Please continue and give me a short summary when done.",
         }
     ],
+}
+
+ASSISTANT_EMPTY_MESSAGE = {
+    "info": {
+        "role": "assistant",
+        "time": {"created": 1772903315050},
+        "id": "msg_assistant_empty",
+        "sessionID": "ses_x",
+    },
+    "parts": [],
+}
+
+ABORTED_EMPTY_ASSISTANT_MESSAGE = {
+    "info": {
+        "role": "assistant",
+        "time": {"created": 1773250176459, "completed": 1773250176760},
+        "error": {
+            "name": "MessageAbortedError",
+            "data": {"message": "The operation was aborted."},
+        },
+        "id": "msg_aborted_empty",
+        "sessionID": "ses_x",
+    },
+    "parts": [],
 }
 
 IGNORED_PLUGIN_MESSAGE = {
@@ -171,6 +196,16 @@ class SnapshotNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized["toolStatuses"], ["completed"])
         self.assertNotIn("message.lastTextPreview", normalized)
 
+    def test_compact_latest_message_marks_early_aborted_message_failed(self):
+        normalized = compact_latest_message(ABORTED_EMPTY_ASSISTANT_MESSAGE)
+        self.assertEqual(normalized["id"], "msg_aborted_empty")
+        self.assertEqual(normalized["status"], "failed")
+        self.assertTrue(normalized["completed"])
+        self.assertEqual(normalized["message.errorName"], "MessageAbortedError")
+        self.assertEqual(normalized["message.errorMessage"], "The operation was aborted.")
+        self.assertTrue(normalized["message.aborted"])
+        self.assertIn("MessageAbortedError", normalized["errorPreview"])
+
     def test_normalize_todo_prefers_active_then_pending_then_latest_completed(self):
         normalized = normalize_todo(
             [
@@ -199,6 +234,13 @@ class SnapshotNormalizationTests(unittest.TestCase):
         self.assertEqual(summary["latestMessage"]["id"], "msg_cc945b9ef00294qavn782M9jhG")
         self.assertEqual(summary["latestAssistantTextPreviewMessageId"], "msg_cbe3a7527001cZT0WrLUPWnamr")
         self.assertIn("Released v0.3.4 successfully", summary["latestAssistantTextPreview"])
+
+    def test_recent_message_summary_preserves_terminal_abort_without_events(self):
+        summary = summarize_recent_messages([USER_TEXT_MESSAGE, ABORTED_EMPTY_ASSISTANT_MESSAGE])
+        self.assertEqual(summary["latestMessage"]["id"], "msg_aborted_empty")
+        self.assertEqual(summary["latestMessage"]["status"], "failed")
+        self.assertTrue(summary["latestMessage"]["message.aborted"])
+        self.assertIn("MessageAbortedError", summary["latestTextPreview"])
 
     def test_recent_message_summary_exposes_window_metadata(self):
         summary = summarize_recent_messages([USER_TEXT_MESSAGE, ASSISTANT_STOP_TEXT_MESSAGE, TOOL_ONLY_COMPLETED_MESSAGE])
@@ -290,6 +332,15 @@ class SnapshotNormalizationTests(unittest.TestCase):
         }
         self.assertEqual(derive_status(waiting_snapshot, previous_status="idle"), "running")
 
+        aborted_snapshot = {
+            "latestMessage": compact_latest_message(ABORTED_EMPTY_ASSISTANT_MESSAGE),
+            "todo": normalize_todo([]),
+            "permission": [],
+            "question": [],
+            "errors": {},
+        }
+        self.assertEqual(derive_status(aborted_snapshot, previous_status="running"), "failed")
+
         observation = snapshot_to_observation(
             {
                 **completed_snapshot,
@@ -306,6 +357,70 @@ class SnapshotNormalizationTests(unittest.TestCase):
         self.assertEqual(observation["lastSeenMessageId"], "msg_cbe3a7527001cZT0WrLUPWnamr")
         self.assertEqual(observation["status"], "completed")
         self.assertTrue(observation["lastCompletedMessageId"])
+
+    def test_analyze_running_progress_detects_user_only_stall_after_assistant_turn_starts(self):
+        summary = summarize_recent_messages([USER_TEXT_MESSAGE, ASSISTANT_EMPTY_MESSAGE])
+        snapshot = {
+            **summary,
+            "todo": normalize_todo([]),
+            "permission": [],
+            "question": [],
+            "errors": {},
+        }
+
+        observation = analyze_running_progress(snapshot, current_status="running", now_ms=1772903375000)
+
+        self.assertIsNotNone(observation)
+        self.assertIn("running_no_visible_progress_since_latest_user_input", observation["signalCodes"])
+        self.assertIn("assistant_turn_started_without_visible_progress", observation["signalCodes"])
+        self.assertIn("recent_window_only_user_input", observation["signalCodes"])
+        self.assertTrue(observation["derived"])
+        self.assertEqual(observation["origin"], "openclaw_compact_snapshot")
+        self.assertTrue(observation["assistantTurnStartedAfterLatestUserInput"])
+        self.assertEqual(observation["progressEventCountSinceLatestUserInput"], 0)
+        self.assertGreaterEqual(observation["secondsSinceLatestUserInput"], 60)
+        self.assertTrue(all(signal.get("derived") for signal in observation["signals"]))
+        self.assertTrue(all(signal.get("origin") == "openclaw_compact_snapshot" for signal in observation["signals"]))
+        self.assertTrue(all("Derived from compact snapshot:" in signal.get("detail", "") for signal in observation["signals"]))
+
+    def test_snapshot_to_observation_carries_stuck_and_transport_hints(self):
+        summary = summarize_recent_messages([USER_TEXT_MESSAGE, ASSISTANT_EMPTY_MESSAGE])
+        snapshot = {
+            **summary,
+            "todo": normalize_todo([]),
+            "permission": [],
+            "question": [],
+            "errors": {
+                "messages": {
+                    "kind": "opencode_api_error_v1",
+                    "status": 429,
+                    "retryAfter": "30",
+                    "message": "GET /session/x/message -> HTTP 429 Too Many Requests",
+                }
+            },
+        }
+
+        with mock.patch("opencode_remote_cycle.datetime") as mocked_datetime:
+            from datetime import datetime, timezone
+
+            mocked_datetime.now.return_value = datetime.fromtimestamp(1772903375, tz=timezone.utc)
+            mocked_datetime.side_effect = lambda *args, **kwargs: datetime(*args, **kwargs)
+            observation = snapshot_to_observation(
+                snapshot,
+                {
+                    "status": "running",
+                    "phase": None,
+                    "lastSeenMessageId": None,
+                    "lastCompletedMessageId": None,
+                    "lastTodoDigest": None,
+                },
+            )
+
+        self.assertEqual(observation["transportErrorHints"][0]["status"], 429)
+        self.assertEqual(observation["transportErrorHints"][0]["retryAfter"], "30")
+        self.assertTrue(observation["transportErrorHints"][0]["derived"])
+        self.assertEqual(observation["transportErrorHints"][0]["origin"], "openclaw_snapshot_errors")
+        self.assertEqual(observation["runningProgressObservation"]["status"], "running_without_visible_progress")
 
 
 if __name__ == "__main__":

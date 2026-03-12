@@ -181,7 +181,7 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
         session_id = "ses_demo_receiver"
         self.assertFalse(
             validate_live.receiver_reply_looks_like_current_state(
-                f"OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1 runtimeSignal {session_id}",
+                f"<opencodeEvent>\nOPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1 runtimeSignal {session_id}\n</opencodeEvent>",
                 session_id=session_id,
             )
         )

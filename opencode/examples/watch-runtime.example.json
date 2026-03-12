@@ -8,5 +8,9 @@
   "message_limit": 10,
   "no_change_visible_after_min": 30,
   "interval_sec": 60,
+  "notifyMinIntervalSec": 300,
+  "notifyMinSeverity": "normal",
+  "notifyKeywords": ["deploy", "release"],
+  "notifyFilterCritical": false,
   "live": false
 }

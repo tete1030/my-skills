@@ -75,6 +75,24 @@ Recommended pattern:
 - blocked / failed / completed -> explicit visible update
 - clear state change -> short progress update
 
+## Watcher notification controls
+
+The watcher can reduce notification churn without changing the core `start/continue ensure watcher` vs `stop-session does not stop watcher` semantics.
+
+Available controls:
+
+- `notifyMinIntervalSec` / `--notify-min-interval-sec`: throttle non-critical visible updates.
+- `notifyMinPriority` or `notifyMinSeverity` / `--notify-min-priority` or `--notify-min-severity`: require at least `low|normal|high` for non-critical updates.
+- `notifyKeywords` / `--notify-keyword`: allow only non-critical updates whose searchable text matches one of the keywords.
+- `notifyFilterCritical` / `--notify-filter-critical`: opt-in switch to apply the same filters to critical updates too. By default, critical updates are preserved and bypass these filters.
+
+Recommended default posture:
+
+- preserve critical updates (`notifyFilterCritical: false`)
+- use a modest non-critical interval such as 300s
+- set severity to `normal` unless detailed progress spam is wanted
+- add keywords only for narrow topical watches
+
 ## Delivery rule
 
 Execution context and delivery context are different things.

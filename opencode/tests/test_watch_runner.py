@@ -95,6 +95,65 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertTrue(action["duplicateSuppressed"])
         self.assertEqual(action["reason"], "duplicate_action_key")
 
+    def test_priority_filter_suppresses_non_critical_progress(self):
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {},
+            live=True,
+            handoff={"updateType": "progress", "priority": "low"},
+            turn={"factSkeleton": {"status": "running", "phase": "editing", "latestMeaningfulPreview": "updated file"}},
+            notify_min_priority="normal",
+        )
+
+        self.assertEqual(action["operation"], "skip_filtered_priority")
+        self.assertFalse(action["shouldExecute"])
+        self.assertTrue(action["priorityFiltered"])
+
+    def test_keyword_filter_suppresses_non_matching_non_critical_update(self):
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {},
+            live=True,
+            handoff={"updateType": "progress", "priority": "normal"},
+            turn={"factSkeleton": {"status": "running", "phase": "editing", "latestMeaningfulPreview": "updated payment docs"}},
+            notify_keywords=["deploy", "release"],
+        )
+
+        self.assertEqual(action["operation"], "skip_filtered_keywords")
+        self.assertFalse(action["shouldExecute"])
+        self.assertTrue(action["keywordFiltered"])
+
+    def test_critical_completion_bypasses_filters_and_rate_limit(self):
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {"lastVisibleNotificationAt": "2026-03-08T10:59:30+00:00"},
+            live=True,
+            handoff={"updateType": "completed", "priority": "normal"},
+            turn={"factSkeleton": {"status": "completed", "phase": None, "latestMeaningfulPreview": "done"}},
+            notify_min_priority="high",
+            notify_min_interval_sec=3600,
+            notify_keywords=["release"],
+        )
+
+        self.assertEqual(action["operation"], "execute")
+        self.assertTrue(action["shouldExecute"])
+        self.assertFalse(action["rateLimited"])
+
+    def test_critical_completion_can_be_filtered_when_explicitly_enabled(self):
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {"lastVisibleNotificationAt": "2026-03-08T10:59:30+00:00"},
+            live=True,
+            handoff={"updateType": "completed", "priority": "normal"},
+            turn={"factSkeleton": {"status": "completed", "phase": None, "latestMeaningfulPreview": "done"}},
+            notify_min_priority="high",
+            notify_filter_critical=True,
+        )
+
+        self.assertEqual(action["operation"], "skip_filtered_priority")
+        self.assertFalse(action["shouldExecute"])
+        self.assertTrue(action["priorityFiltered"])
+
     def test_live_mode_suppresses_second_run_when_only_cadence_changes(self):
         first_turn = {
             "factSkeleton": {
@@ -207,6 +266,29 @@ class WatchRunnerTests(unittest.TestCase):
         self.assertFalse(action["supersededSuppressed"])
         self.assertEqual(action["reason"], "ready_inject_live")
 
+    def test_terminal_completion_after_progress_is_not_same_cluster_suppressed(self):
+        earlier_progress = self.task_cluster(preview="Still running.")
+        earlier_progress["clusterStateRank"] = 20
+        earlier_progress["sourceUpdateMs"] = 100
+        earlier_progress["detailRank"] = len("Still running.")
+
+        terminal_completion = self.task_cluster(preview="Done and verified.")
+        terminal_completion["clusterStateRank"] = 40
+        terminal_completion["sourceUpdateMs"] = 200
+        terminal_completion["detailRank"] = len("Done and verified.")
+
+        action = decide_watch_action(
+            self.ready_agent_call(),
+            {"clusterHeads": {earlier_progress["key"]: earlier_progress}},
+            live=True,
+            task_cluster=terminal_completion,
+        )
+
+        self.assertEqual(action["operation"], "execute")
+        self.assertTrue(action["shouldExecute"])
+        self.assertFalse(action["duplicateSuppressed"])
+        self.assertFalse(action["supersededSuppressed"])
+
     def test_non_ready_agent_call_skips_before_live_or_dry_run(self):
         agent_call = self.ready_agent_call()
         agent_call["deliveryAction"] = "hold"
@@ -225,7 +307,17 @@ class WatchRunnerTests(unittest.TestCase):
         agent_call = self.ready_agent_call()
         with tempfile.TemporaryDirectory() as tmpdir:
             state_path = Path(tmpdir) / "watch-state.json"
-            state_path.write_text(json.dumps({"status": "running"}) + "\n")
+            state_path.write_text(json.dumps({
+                "status": "running",
+                "runningProgressObservation": {
+                    "kind": "opencode_running_progress_observation_v1",
+                    "status": "running_without_visible_progress",
+                    "signalCodes": ["running_no_visible_progress_since_latest_user_input"],
+                },
+                "transportErrorHints": [
+                    {"name": "messages", "status": 429, "retryAfter": "30", "message": "HTTP 429 Too Many Requests"}
+                ],
+            }) + "\n")
 
             watch_state = update_watch_state(
                 state_path,
@@ -260,8 +352,12 @@ class WatchRunnerTests(unittest.TestCase):
 
             self.assertEqual(watch_state["lastExecutedActionKey"], "opencode-origin-handoff-abc123")
             self.assertIn(watch_state["lastTaskClusterKey"], watch_state["clusterHeads"])
+            self.assertEqual(watch_state["lastRunningProgressObservation"]["status"], "running_without_visible_progress")
+            self.assertEqual(watch_state["lastTransportErrorHints"][0]["status"], 429)
             reloaded = json.loads(state_path.read_text())
             self.assertEqual(reloaded["watchRunner"]["lastExecutedActionKey"], "opencode-origin-handoff-abc123")
+            self.assertEqual(reloaded["watchRunner"]["lastRunningProgressObservation"]["status"], "running_without_visible_progress")
+            self.assertEqual(reloaded["watchRunner"]["lastTransportErrorHints"][0]["retryAfter"], "30")
             self.assertEqual(reloaded["status"], "running")
 
     def test_terminal_state_can_trigger_idle_timeout_exit(self):

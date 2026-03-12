@@ -16,7 +16,36 @@ Do not guess write/control endpoints unless they are verified.
 - `/permission`
 - `/question`
 
+## Verified control endpoint
+
+- `POST /session/{id}/abort?workspace=<workspace>` -> abort request surface for the current OpenCode run
+
+### Abort caveat (live behavior)
+
+- Current live probes show that `POST /session/{id}/abort?workspace=<workspace>` can return success and clear the workspace busy entry while the underlying tool/shell execution still continues and later completes normally.
+- Therefore, do **not** treat abort acceptance or busy-entry disappearance alone as proof of a hard stop.
+- Manager/tooling should verify terminal message state after abort, and may need to report `stopLikelyFailed` / unverified outcomes instead of claiming success.
+
+## Verified UI route format
+
+- Usable session UI URL: `/<base64url(workspace-no-padding)>/session/<sessionId>`
+- Example workspace `/mnt/vault/teslausb-video-sum` -> `L21udC92YXVsdC90ZXNsYXVzYi12aWRlby1zdW0`
+- Do **not** assume `/session/<sessionId>` is the correct browser URL by itself
+
 ## Payload notes
+
+### `/session/status`
+
+Observed shape is a workspace-scoped map of busy sessions, for example:
+
+```json
+{
+  "ses_...": {"type": "busy"}
+}
+```
+
+When an externally running session is aborted, the corresponding busy entry disappears; there was no separate durable `paused` state observed from this endpoint during the probe.
+
 
 ### `/session`
 
@@ -43,6 +72,9 @@ Useful fields/variants observed:
 - `info.time.created`
 - optional `info.time.completed`
 - optional `info.finish`
+- optional `info.error.name` / `info.error.data.message`
+  - observed when a run was externally stopped via `POST /session/{id}/abort`
+  - early abort can leave `parts: []` while still setting `info.error.name = MessageAbortedError`
 - `parts[]`
   - `text`
   - `tool`

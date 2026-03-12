@@ -2,6 +2,7 @@
 import argparse
 import json
 import re
+from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from opencode_api_client import OpenCodeClient
@@ -10,6 +11,7 @@ ACTIVE_TODO_STATUSES = {"in_progress", "active", "running", "current"}
 PENDING_TODO_STATUSES = {"pending", "todo", "queued", "next", "open"}
 COMPLETED_TODO_STATUSES = {"completed", "done", "finished", "closed", "resolved"}
 FAILED_MESSAGE_STATUSES = {"error", "failed", "failure", "cancelled", "canceled"}
+ABORTED_MESSAGE_ERROR_NAMES = {"messageabortederror"}
 RUNNING_TOOL_STATUSES = {"queued", "pending", "running", "active", "started", "in_progress"}
 COMPLETED_TOOL_STATUSES = {"completed", "done", "finished", "succeeded", "success", "ok"}
 
@@ -158,10 +160,20 @@ def normalize_message_status(
     completed_at: Any,
     tool_statuses: Iterable[str],
     part_types: Iterable[str],
+    error_name: Any = None,
+    error_message: Any = None,
 ) -> str:
     finish_norm = str(finish or "").strip().lower()
     statuses = [str(status or "").strip().lower() for status in tool_statuses if status]
-    if finish_norm in FAILED_MESSAGE_STATUSES or any(status in FAILED_MESSAGE_STATUSES for status in statuses):
+    error_name_norm = str(error_name or "").strip().lower()
+    error_message_norm = str(error_message or "").strip().lower()
+    if (
+        finish_norm in FAILED_MESSAGE_STATUSES
+        or any(status in FAILED_MESSAGE_STATUSES for status in statuses)
+        or error_name_norm in ABORTED_MESSAGE_ERROR_NAMES
+        or (error_name_norm and "abort" in error_name_norm)
+        or (error_message_norm and "abort" in error_message_norm)
+    ):
         return "failed"
     if not completed_at and any(status in RUNNING_TOOL_STATUSES for status in statuses):
         return "running"
@@ -186,6 +198,14 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
     finish = info.get("finish") or msg.get("finish")
     message_id = info.get("id") or msg.get("id")
     ignored = extract_ignored_flag(msg) or extract_ignored_flag(info)
+    info_error = info.get("error") if isinstance(info.get("error"), dict) else {}
+    error_name = info_error.get("name")
+    error_message = get_nested(info_error, "data", "message") or info_error.get("message")
+    aborted = str(error_name or "").strip().lower() in ABORTED_MESSAGE_ERROR_NAMES or "abort" in str(error_message or "").strip().lower()
+    error_preview = truncate_text(
+        ": ".join(part for part in [str(error_name).strip() if error_name else None, str(error_message).strip() if error_message else None] if part),
+        limit=200,
+    )
 
     part_types: List[str] = []
     tool_names: List[str] = []
@@ -222,6 +242,8 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
         completed_at=completed_at,
         tool_statuses=tool_statuses,
         part_types=part_types,
+        error_name=error_name,
+        error_message=error_message,
     )
 
     out: Dict[str, Any] = {}
@@ -245,8 +267,12 @@ def compact_latest_message(msg: Any) -> Dict[str, Any]:
         "message.timestamp": created,
         "message.lastContentType": "text" if last_text_preview else (part_types[-1] if part_types else None),
         "message.lastTextPreview": last_text_preview,
+        "message.errorName": error_name,
+        "message.errorMessage": error_message,
+        "message.aborted": aborted or None,
         "textPreview": last_text_preview,
         "toolOutputPreview": last_tool_output_preview,
+        "errorPreview": error_preview,
     }.items():
         if value is None:
             continue
@@ -569,10 +595,19 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
     normalized_messages = [compact_latest_message(message) for message in message_list]
     per_message_events = [extract_message_events(message) for message in message_list]
 
+    def message_has_relevant_terminal_signal(message: Dict[str, Any]) -> bool:
+        status = str(message.get("status") or "").strip().lower()
+        return bool(
+            message.get("message.aborted")
+            or message.get("message.errorName")
+            or message.get("errorPreview")
+            or status in {"failed", "error", "cancelled", "canceled"}
+        )
+
     relevant_indexes = [
         index
         for index, events in enumerate(per_message_events)
-        if any(not event.get("ignored") for event in events)
+        if any(not event.get("ignored") for event in events) or message_has_relevant_terminal_signal(normalized_messages[index])
     ]
     latest_index = len(normalized_messages) - 1 if normalized_messages else None
     latest_relevant_index = relevant_indexes[-1] if relevant_indexes else latest_index
@@ -600,15 +635,16 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
     latest_tool_output_preview = latest.get("toolOutputPreview")
     latest_text_preview = (
         latest.get("message.lastTextPreview")
+        or latest.get("errorPreview")
         or latest_assistant_text_preview
         or latest_tool_output_preview
         or latest_text_preview_any
     )
     latest_text_preview_message_id = (
-        latest.get("id") if latest.get("message.lastTextPreview") or latest_tool_output_preview else latest_assistant_text_preview_message_id or latest_text_preview_any_message_id
+        latest.get("id") if latest.get("message.lastTextPreview") or latest.get("errorPreview") or latest_tool_output_preview else latest_assistant_text_preview_message_id or latest_text_preview_any_message_id
     )
     latest_text_preview_role = (
-        latest.get("role") if latest.get("message.lastTextPreview") or latest_tool_output_preview else ("assistant" if latest_assistant_text_preview else latest_text_preview_any_role)
+        latest.get("role") if latest.get("message.lastTextPreview") or latest.get("errorPreview") or latest_tool_output_preview else ("assistant" if latest_assistant_text_preview else latest_text_preview_any_role)
     )
 
     event_ledger = collapse_events([event for events in per_message_events for event in events])[-EVENT_LEDGER_MAX:]
@@ -634,14 +670,189 @@ def summarize_recent_messages(messages: Any) -> Dict[str, Any]:
 
 
 
-def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10) -> Tuple[Dict[str, Any], Dict[str, str]]:
-    errors: Dict[str, str] = {}
+def serialize_snapshot_error(exc: Exception) -> Dict[str, Any]:
+    if hasattr(exc, "to_dict") and callable(exc.to_dict):
+        data = exc.to_dict()
+        if isinstance(data, dict):
+            return data
+    return {
+        "kind": "snapshot_error_v1",
+        "message": str(exc),
+        "type": exc.__class__.__name__,
+    }
+
+
+
+def summarize_transport_errors(errors: Any) -> List[Dict[str, Any]] | None:
+    if not isinstance(errors, dict):
+        return None
+    hints: List[Dict[str, Any]] = []
+    for name, value in errors.items():
+        entry: Dict[str, Any] = {
+            "name": name,
+            "derived": True,
+            "origin": "openclaw_snapshot_errors",
+        }
+        if isinstance(value, dict):
+            for key in ("kind", "status", "reason", "retryAfter", "requestId", "bodyPreview", "message", "cause"):
+                if value.get(key) is not None:
+                    entry[key] = value.get(key)
+        elif value is not None:
+            entry["message"] = str(value)
+        hints.append(entry)
+    return hints or None
+
+
+
+def iso_from_epoch_ms(value: Any) -> Optional[str]:
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError):
+        return None
+    return datetime.fromtimestamp(numeric / 1000.0, tz=timezone.utc).isoformat()
+
+
+
+def analyze_running_progress(snapshot: Dict[str, Any], *, current_status: str | None, now_ms: int | None = None, long_running_threshold_sec: int = 180) -> Dict[str, Any] | None:
+    if str(current_status or "").strip().lower() != "running":
+        return None
+
+    visible = [
+        event
+        for event in (snapshot.get("eventLedger") if isinstance(snapshot.get("eventLedger"), list) else [])
+        if isinstance(event, dict) and not event.get("ignored")
+    ]
+    if not visible:
+        return None
+
+    latest_user_message_id = snapshot.get("latestUserInputMessageId")
+    anchor_index = None
+    fallback_index = None
+    for index in range(len(visible) - 1, -1, -1):
+        event = visible[index]
+        if event.get("kind") != "user_input":
+            continue
+        if fallback_index is None:
+            fallback_index = index
+        if latest_user_message_id and event.get("messageId") == latest_user_message_id:
+            anchor_index = index
+            break
+    if anchor_index is None:
+        anchor_index = fallback_index
+    if anchor_index is None:
+        return None
+
+    anchor = visible[anchor_index]
+    delta_events = visible[anchor_index + 1 :]
+    progress_events = [event for event in delta_events if event.get("kind") != "user_input"]
+    assistant_message_ids: List[str] = []
+    seen_assistant_message_ids: set[str] = set()
+    for event in delta_events:
+        role = str(event.get("role") or ("user" if event.get("kind") == "user_input" else "assistant")).strip().lower()
+        message_id = event.get("messageId")
+        if role != "assistant" or not isinstance(message_id, str) or not message_id or message_id in seen_assistant_message_ids:
+            continue
+        seen_assistant_message_ids.add(message_id)
+        assistant_message_ids.append(message_id)
+
+    newest_observed = snapshot.get("messageWindow") if isinstance(snapshot.get("messageWindow"), dict) else {}
+    newest_role = str(newest_observed.get("newestMessageRole") or "").strip().lower()
+    newest_created = newest_observed.get("newestMessageCreated")
+    anchor_created = anchor.get("created")
+    assistant_turn_started = (
+        newest_role == "assistant"
+        and isinstance(newest_created, (int, float))
+        and isinstance(anchor_created, (int, float))
+        and newest_created >= anchor_created
+    )
+
+    now_ms = now_ms if isinstance(now_ms, int) else int(datetime.now(timezone.utc).timestamp() * 1000)
+    seconds_since_anchor = None
+    if isinstance(anchor_created, (int, float)):
+        seconds_since_anchor = max(0, int((now_ms - int(anchor_created)) / 1000))
+
+    signal_codes: List[str] = []
+    signals: List[Dict[str, Any]] = []
+
+    def add_signal(code: str, detail: str, *, severity: str = "warning") -> None:
+        if code in signal_codes:
+            return
+        signal_codes.append(code)
+        signals.append(
+            {
+                "code": code,
+                "severity": severity,
+                "detail": detail,
+                "derived": True,
+                "origin": "openclaw_compact_snapshot",
+            }
+        )
+
+    if not progress_events:
+        add_signal(
+            "running_no_visible_progress_since_latest_user_input",
+            "Derived from compact snapshot: no non-user progress events were retained after the latest user input.",
+        )
+    if assistant_turn_started and not progress_events:
+        add_signal(
+            "assistant_turn_started_without_visible_progress",
+            "Derived from compact snapshot: the newest observed message is assistant, but no visible progress parts were retained.",
+        )
+    if visible and all(event.get("kind") == "user_input" for event in visible):
+        add_signal(
+            "recent_window_only_user_input",
+            "Derived from compact snapshot: the retained recent window contains only user_input events.",
+            severity="info",
+        )
+
+    if not signals:
+        return None
+
+    return {
+        "kind": "opencode_running_progress_observation_v1",
+        "status": "running_without_visible_progress",
+        "derived": True,
+        "origin": "openclaw_compact_snapshot",
+        "signalCodes": signal_codes,
+        "signals": signals,
+        "longRunningThresholdSec": long_running_threshold_sec,
+        "longRunning": bool(seconds_since_anchor is not None and seconds_since_anchor >= long_running_threshold_sec),
+        "secondsSinceLatestUserInput": seconds_since_anchor,
+        "latestUserInput": {
+            key: value
+            for key, value in {
+                "messageId": anchor.get("messageId") or latest_user_message_id,
+                "summary": truncate_text(anchor.get("summary"), limit=140),
+                "createdAt": iso_from_epoch_ms(anchor_created),
+            }.items()
+            if value is not None
+        },
+        "visibleEventCountSinceLatestUserInput": len(delta_events),
+        "assistantMessageCountSinceLatestUserInput": len(assistant_message_ids),
+        "progressEventCountSinceLatestUserInput": len(progress_events),
+        "assistantTurnStartedAfterLatestUserInput": assistant_turn_started,
+        "newestObservedMessage": {
+            key: value
+            for key, value in {
+                "messageId": newest_observed.get("newestMessageId"),
+                "role": newest_observed.get("newestMessageRole"),
+                "createdAt": iso_from_epoch_ms(newest_created),
+            }.items()
+            if value is not None
+        }
+        or None,
+    }
+
+
+
+def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+    errors: Dict[str, Dict[str, Any]] = {}
 
     def attempt(name, fn):
         try:
             return fn()
         except Exception as exc:
-            errors[name] = str(exc)
+            errors[name] = serialize_snapshot_error(exc)
             return None
 
     messages = attempt("messages", lambda: client.session_messages(session_id, limit=message_limit))

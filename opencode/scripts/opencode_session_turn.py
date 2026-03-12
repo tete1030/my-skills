@@ -51,12 +51,19 @@ def short(text, n=200):
 def latest_meaningful_preview(payload):
     snapshot = payload.get("snapshot") or {}
     latest = snapshot.get("latestMessage") or {}
+    latest_status = str(latest.get("status") or "").strip().lower()
+    if latest_status in {"completed", "failed", "blocked"}:
+        terminal_preview = latest_assistant_message_text_preview(snapshot)
+        if terminal_preview:
+            return terminal_preview
     preview = (
         snapshot.get("accumulatedEventSummary")
         or snapshot.get("latestAssistantTextPreview")
         or snapshot.get("latestTextPreview")
         or latest.get("message.lastTextPreview")
         or latest.get("textPreview")
+        or latest.get("errorPreview")
+        or latest.get("message.errorMessage")
     )
     return short(preview)
 
@@ -69,6 +76,8 @@ def latest_assistant_message_text_preview(snapshot):
     terminal_marker = (
         latest.get("message.stopReason")
         or latest.get("finish")
+        or latest.get("errorPreview")
+        or latest.get("message.errorMessage")
         or ("step-finish" if latest.get("type") == "step-finish" else None)
     )
     if not terminal_marker:
@@ -76,6 +85,8 @@ def latest_assistant_message_text_preview(snapshot):
     return short(
         latest.get("message.lastTextPreview")
         or latest.get("textPreview")
+        or latest.get("errorPreview")
+        or latest.get("message.errorMessage")
     )
 
 

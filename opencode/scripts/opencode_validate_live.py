@@ -769,6 +769,8 @@ def receiver_reply_looks_like_current_state(reply_text: str, *, session_id: str)
     if not text or text == "NO_REPLY":
         return False
     forbidden = [
+        "<opencodeEvent>",
+        "</opencodeEvent>",
         SYSTEM_EVENT_TEXT_HEADER,
         "runtimeSignal",
         "inspect_once_current_state",

@@ -8,7 +8,7 @@ from pathlib import Path
 
 from opencode_api_client import OpenCodeClient
 from opencode_cycle import load_state, write_json, now_iso, append_history, decide, apply_control
-from opencode_snapshot import build_compact_snapshot
+from opencode_snapshot import analyze_running_progress, build_compact_snapshot, summarize_transport_errors
 
 
 ACTIVE_TODO_STATUSES = {"in_progress", "active", "running", "current"}
@@ -108,6 +108,8 @@ def derive_status(snapshot, previous_status="idle"):
         return "blocked"
 
     raw_status = str(latest.get("status") or "").lower()
+    if latest.get("message.aborted") or latest.get("message.errorName"):
+        return "failed"
     if raw_status in {"failed", "error"}:
         return "failed"
 
@@ -152,6 +154,9 @@ def snapshot_to_observation(snapshot, state):
     todo_digest = stable_digest(todo) if todo is not None else state.get("lastTodoDigest")
     phase = derive_phase(todo, fallback=state.get("phase"))
     status = derive_status(snapshot, previous_status=state.get("status"))
+    last_updated_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
+    progress_observation = analyze_running_progress(snapshot, current_status=status, now_ms=last_updated_ms)
+    transport_error_hints = summarize_transport_errors(snapshot.get("errors"))
     changed = False
     if latest_id and latest_id != state.get("lastSeenMessageId"):
         changed = True
@@ -168,9 +173,11 @@ def snapshot_to_observation(snapshot, state):
         "lastSeenMessageId": latest_id,
         "lastCompletedMessageId": latest_id if status == "completed" else state.get("lastCompletedMessageId"),
         "lastTodoDigest": todo_digest,
-        "lastUpdatedMs": int(datetime.now(timezone.utc).timestamp() * 1000),
+        "lastUpdatedMs": last_updated_ms,
         "noChange": not changed,
         "visibleUpdate": False,
+        "runningProgressObservation": progress_observation,
+        "transportErrorHints": transport_error_hints,
     }
     return observation
 
