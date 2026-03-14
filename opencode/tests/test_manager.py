@@ -340,6 +340,46 @@ class OpenCodeManagerTests(unittest.TestCase):
             )
             fake_client.prompt_session.assert_called_once()
 
+    def test_start_command_route_mismatch_fails_before_prompt_delivery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start",
+                first_prompt_file=None,
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
+                openclaw_delivery_target="telegram:-100123:topic:42",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_watcher = {
+                "watcherId": "ow_wrong",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:4029",
+                "openclawDeliveryTarget": "telegram:-100123:topic:4029",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ):
+                with self.assertRaisesRegex(RuntimeError, "route mismatch"):
+                    start_command(args)
+
+            fake_client.prompt_session.assert_not_called()
+
     def test_start_command_reads_first_prompt_from_file(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -1033,7 +1073,7 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIsNone(inspection["rehydration"]["sinceLatestUserInput"].get("latestAssistantText"))
             self.assertEqual(inspection["rehydration"]["watcherState"]["watcherId"], "ow_new")
 
-    def test_continue_command_can_ensure_watcher_using_previous_binding(self):
+    def test_continue_command_requires_explicit_current_openclaw_binding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
             save_json_object(
@@ -1078,31 +1118,55 @@ class OpenCodeManagerTests(unittest.TestCase):
                 registry_path=str(registry_path),
             )
             fake_client = mock.Mock()
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client):
+                with self.assertRaisesRegex(ValueError, "requires --openclaw-session-key"):
+                    continue_command(args)
+
+            fake_client.get_session.assert_not_called()
+            fake_client.prompt_session.assert_not_called()
+
+    def test_continue_command_route_mismatch_fails_before_prompt_delivery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                follow_up_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:10",
+                openclaw_delivery_target="telegram:-100123:topic:10",
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                registry_path=str(registry_path),
+            )
+            fake_client = mock.Mock()
             fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
-            fake_client.prompt_session.return_value = None
             fake_watcher = {
-                "watcherId": "ow_new",
+                "watcherId": "ow_wrong",
                 "watcherStatus": "running",
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:4029",
+                "openclawDeliveryTarget": "telegram:-100123:topic:4029",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
                 "opencode_manager.list_watch_runtime_processes", return_value={}
-            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher) as mocked_start:
-                result = continue_command(args)
+            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher):
+                with self.assertRaisesRegex(RuntimeError, "route mismatch"):
+                    continue_command(args)
 
-            mocked_start.assert_called_once()
-            self.assertEqual(mocked_start.call_args.kwargs["openclaw_session_key"], "agent:main:telegram:group:-100123:topic:42")
-            self.assertEqual(result["watcher"]["watcherId"], "ow_new")
-            self.assertEqual(result["handoffMode"], "watcher_live")
-            self.assertEqual(result["agentAction"], "acknowledge_and_end_turn")
-            self.assertIn("OpenCode", result["userFacingAck"])
-            self.assertIn("OpenClaw", result["userFacingAck"])
-            fake_client.prompt_session.assert_called_once()
+            fake_client.prompt_session.assert_not_called()
 
     def test_continue_command_reads_follow_up_prompt_from_stdin(self):
         with tempfile.TemporaryDirectory() as tmpdir:

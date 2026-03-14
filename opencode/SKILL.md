@@ -51,7 +51,7 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 - Need to find an existing session first -> `list-sessions`
 - Need current state of one existing session -> `inspect` (now returns a compact `rehydration` block for takeover/current-state rebuild)
 - Need more detail on one recent message/event after inspect/attach, including recent shell output or what happened between inspect points -> `inspect-history` (`--recent-index 0` = latest, then 1/2 if needed, or use `--message-id`)
-- Need to send more work into an existing session -> `continue` by default (normal path ensures watcher routing automatically; use `--no-watcher` only if the user explicitly wants no watcher / no routed progress, or you are doing narrow runtime debugging)
+- Need to send more work into an existing session -> `continue` by default (normal path ensures watcher routing automatically; pass the current `--openclaw-session-key` explicitly for watcher-bound continues, because implicit reuse of an older watcher binding is now treated as unsafe; use `--no-watcher` only if the user explicitly wants no watcher / no routed progress, or you are doing narrow runtime debugging)
 - Need to really stop the OpenCode run itself -> `stop-session` (real abort API, not a pause-like follow-up prompt; keep any watcher attached unless the user explicitly asks to stop monitoring too; if `--opencode-workspace` is supplied it must match the session's actual directory)
 - Need watcher routing back to this OpenClaw session for an existing session -> `attach` or `continue` (`attach` now also returns the same immediate inspection/rehydration payload; `--ensure-watcher` remains accepted as an explicit compatibility alias, but default usage should not require it)
 - Need to see watcher bindings -> `list-watchers`
@@ -89,6 +89,7 @@ Hot-path interpretation:
 - `agentAction=acknowledge_and_end_turn` means acknowledge once and stop there for this turn.
 - `handoffMode=watcher_live` means the watcher now owns future progress delivery and same-turn completion checks should not be re-added by the agent.
 - `handoffMode=watcher_not_live`, `watcher_missing`, or `no_watcher` mean there is no live watcher handoff; any later status check happens only in a future explicit turn.
+- If `start` / `continue` / `attach` fails with a route/origin mismatch (wrong `openclawSessionKey` / delivery target after verification), treat that as a hard failure. Do **not** continue with `inspect-history`, `process poll`, log spelunking, or manual completion checks as if the handoff succeeded.
 
 This is the main anti-sprawl rule: prefer the manager contract over repeated hand-written polling guidance.
 

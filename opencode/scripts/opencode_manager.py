@@ -590,6 +590,37 @@ def build_session_summary(
 
 
 
+def verify_watcher_binding(
+    watcher_entry: dict[str, Any] | None,
+    *,
+    expected_session_key: str | None,
+    expected_delivery_target: str | None,
+    command_name: str,
+) -> dict[str, Any] | None:
+    if watcher_entry is None:
+        return None
+
+    actual_session_key = watcher_entry.get("openclawSessionKey")
+    actual_delivery_target = watcher_entry.get("openclawDeliveryTarget")
+    mismatches: list[str] = []
+    if expected_session_key is not None and actual_session_key != expected_session_key:
+        mismatches.append(
+            f"openclawSessionKey expected {expected_session_key!r} but watcher bound {actual_session_key!r}"
+        )
+    if expected_delivery_target is not None and actual_delivery_target != expected_delivery_target:
+        mismatches.append(
+            f"openclawDeliveryTarget expected {expected_delivery_target!r} but watcher bound {actual_delivery_target!r}"
+        )
+
+    if mismatches:
+        raise RuntimeError(
+            f"{command_name} route mismatch: wrong OpenClaw origin binding after handoff verification; "
+            + "; ".join(mismatches)
+        )
+    return watcher_entry
+
+
+
 def value_non_empty(value: Any) -> bool:
     if value is None:
         return False
@@ -1868,16 +1899,14 @@ def resolve_continue_watcher_request(
     if not isinstance(opencode_workspace, str) or not opencode_workspace:
         raise ValueError("continue --ensure-watcher requires a resolvable opencodeWorkspace")
 
-    openclaw_session_key = args.openclaw_session_key or (latest_entry.get("openclawSessionKey") if latest_entry else None)
+    openclaw_session_key = args.openclaw_session_key
     if not isinstance(openclaw_session_key, str) or not openclaw_session_key:
         raise ValueError(
-            "continue --ensure-watcher requires --openclaw-session-key when no prior watcher binding exists"
+            "continue --ensure-watcher requires --openclaw-session-key for the current requester; "
+            "refusing to silently reuse a prior watcher binding because that can route progress to the wrong OpenClaw origin"
         )
 
-    openclaw_delivery_target = coalesce(
-        args.openclaw_delivery_target,
-        latest_entry.get("openclawDeliveryTarget") if latest_entry else None,
-    )
+    openclaw_delivery_target = args.openclaw_delivery_target
     watch_live = bool(coalesce(args.watch_live, latest_entry.get("watchLive") if latest_entry else False))
     watch_interval_sec = int(coalesce(args.watch_interval_sec, latest_entry.get("watchIntervalSec") if latest_entry else DEFAULT_WATCH_INTERVAL_SEC))
     idle_timeout_sec = int(coalesce(args.idle_timeout_sec, latest_entry.get("idleTimeoutSec") if latest_entry else DEFAULT_IDLE_TIMEOUT_SEC))
@@ -2214,16 +2243,6 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
     if not isinstance(opencode_session_id, str) or not opencode_session_id:
         raise ValueError("OpenCode session creation did not return an id")
 
-    client.prompt_session(
-        opencode_session_id,
-        directory=args.opencode_workspace,
-        parts=[{"type": "text", "text": first_prompt["text"]}],
-        model=prompt_overrides["model"],
-        agent=prompt_overrides["agent"],
-        variant=prompt_overrides["variant"],
-        asynchronous=True,
-    )
-
     watcher_entry = None
     if watcher_requested:
         watcher_entry = start_or_attach_watcher(
@@ -2245,6 +2264,22 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
             watch_message_limit=args.watch_message_limit,
             watch_timeout_sec=args.watch_timeout_sec,
         )
+        verify_watcher_binding(
+            watcher_entry,
+            expected_session_key=args.openclaw_session_key,
+            expected_delivery_target=args.openclaw_delivery_target,
+            command_name="start",
+        )
+
+    client.prompt_session(
+        opencode_session_id,
+        directory=args.opencode_workspace,
+        parts=[{"type": "text", "text": first_prompt["text"]}],
+        model=prompt_overrides["model"],
+        agent=prompt_overrides["agent"],
+        variant=prompt_overrides["variant"],
+        asynchronous=True,
+    )
 
     result = {
         "kind": "opencode_manager_start_v1",
@@ -2299,6 +2334,12 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_message_limit=args.watch_message_limit,
         watch_timeout_sec=args.watch_timeout_sec,
     )
+    verify_watcher_binding(
+        watcher_entry,
+        expected_session_key=args.openclaw_session_key,
+        expected_delivery_target=args.openclaw_delivery_target,
+        command_name="attach",
+    )
 
     snapshot, _errors = build_compact_snapshot(client, args.opencode_session_id, message_limit=args.watch_message_limit)
 
@@ -2329,6 +2370,11 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     prompt_overrides = resolve_prompt_overrides(args)
     requested_overrides = summarize_prompt_overrides(prompt_overrides)
     watcher_requested = bool(getattr(args, "ensure_watcher", True))
+    if watcher_requested and not getattr(args, "openclaw_session_key", None):
+        raise ValueError(
+            "continue --ensure-watcher requires --openclaw-session-key for the current requester; "
+            "refusing implicit watcher reuse because that can route progress to the wrong OpenClaw origin"
+        )
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     timeout = args.watch_timeout_sec if args.watch_timeout_sec is not None else DEFAULT_TIMEOUT_SEC
     client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=timeout)
@@ -2336,16 +2382,6 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         client,
         opencode_session_id=args.opencode_session_id,
         opencode_workspace=args.opencode_workspace,
-    )
-
-    client.prompt_session(
-        args.opencode_session_id,
-        directory=args.opencode_workspace or session_data.get("directory"),
-        parts=[{"type": "text", "text": follow_up_prompt["text"]}],
-        model=prompt_overrides["model"],
-        agent=prompt_overrides["agent"],
-        variant=prompt_overrides["variant"],
-        asynchronous=True,
     )
 
     watcher_payload = None
@@ -2362,6 +2398,24 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
                 }
 
     watcher_entry = watcher_payload["watcher"] if watcher_payload else None
+    if watcher_requested:
+        verify_watcher_binding(
+            watcher_entry,
+            expected_session_key=args.openclaw_session_key,
+            expected_delivery_target=args.openclaw_delivery_target,
+            command_name="continue",
+        )
+
+    client.prompt_session(
+        args.opencode_session_id,
+        directory=args.opencode_workspace or session_data.get("directory"),
+        parts=[{"type": "text", "text": follow_up_prompt["text"]}],
+        model=prompt_overrides["model"],
+        agent=prompt_overrides["agent"],
+        variant=prompt_overrides["variant"],
+        asynchronous=True,
+    )
+
     session_summary = build_session_summary(session_data, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_entry)
 
     result = {
@@ -2783,7 +2837,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     parser = build_parser()
     args = parser.parse_args()
-    result = args.func(args)
+    try:
+        result = args.func(args)
+    except (ValueError, RuntimeError) as exc:
+        print(f"opencode-manager error: {exc}", file=sys.stderr)
+        return 1
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 
