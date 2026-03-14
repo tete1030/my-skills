@@ -28,8 +28,8 @@ Use the manager entrypoint for the current session/watcher workflow:
 Key points:
 
 - `start` accepts `--first-prompt` or the safer `--first-prompt-file` (`-` = stdin); prefer file/stdin for long or shell-sensitive prompts.
-- `start` is expected to create/attach the watcher immediately for normal conversation-driven usage; do not treat watcher setup as a separate optional follow-up after `start`.
-- `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin); for normal agent usage it should also ensure watcher routing with `--ensure-watcher` so later progress returns to the originating OpenClaw session.
+- `start` now ensures watcher setup by default for normal conversation-driven usage; use `--no-watcher` only when you explicitly want no routed progress/debug mode.
+- `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin); for normal agent usage it now ensures watcher routing by default so later progress returns to the originating OpenClaw session. Use `--no-watcher` to opt out; `--ensure-watcher` remains accepted as a compatibility alias.
 - Watchers now support notification shaping knobs for token control: `--notify-min-interval-sec` (rate-limit non-critical updates), `--notify-min-priority low|normal|high`, and repeated `--notify-keyword <term>` filters. Critical updates (failed/blocked/completed) bypass these non-critical filters by default.
 - `stop-session` is the manager-level real stop surface and uses the verified OpenCode abort API instead of a pause-like follow-up prompt; it should stop only the OpenCode session and keep any watcher attached unless the user explicitly asks to stop monitoring or detach the watcher too.
 - `stop-session` rejects an explicit `--opencode-workspace` mismatch before aborting, so a scope mistake cannot silently hit the wrong workspace/session pairing.

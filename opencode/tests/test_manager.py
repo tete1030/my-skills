@@ -389,6 +389,45 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(result["firstPrompt"]["promptFile"], str(prompt_path.resolve()))
             self.assertIn("line 1 with `backticks`", result["firstPrompt"]["promptPreview"])
 
+    def test_start_command_allows_explicit_no_watcher_opt_out(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start without watcher",
+                first_prompt_file=None,
+                ensure_watcher=False,
+                openclaw_session_key=None,
+                openclaw_delivery_target=None,
+                watch_live=False,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                notify_min_interval_sec=0,
+                notify_min_priority="low",
+                notify_keyword=[],
+                notify_filter_critical=False,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher"
+            ) as start_watcher:
+                result = start_command(args)
+
+            start_watcher.assert_not_called()
+            self.assertEqual(result["handoffMode"], "no_watcher")
+            self.assertTrue(result["firstPrompt"]["accepted"])
+            self.assertNotIn("watcher", result)
+
     def test_inspect_command_returns_rehydration_block_with_window_coverage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
@@ -1409,6 +1448,21 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_start.command, "start")
         self.assertEqual(parsed_start.first_prompt_file, "prompt.txt")
         self.assertIsNone(parsed_start.first_prompt)
+        self.assertTrue(parsed_start.ensure_watcher)
+
+        parsed_start_no_watcher = parser.parse_args(
+            [
+                "start",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-workspace",
+                "/tmp/demo-workspace",
+                "--first-prompt-file",
+                "prompt.txt",
+                "--no-watcher",
+            ]
+        )
+        self.assertFalse(parsed_start_no_watcher.ensure_watcher)
 
         parsed_continue = parser.parse_args(
             [
@@ -1419,7 +1473,6 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "ses_demo",
                 "--follow-up-prompt-file",
                 "-",
-                "--ensure-watcher",
             ]
         )
         self.assertEqual(parsed_continue.command, "continue")
@@ -1427,6 +1480,20 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_continue.follow_up_prompt_file, "-")
         self.assertIsNone(parsed_continue.follow_up_prompt)
         self.assertTrue(parsed_continue.ensure_watcher)
+
+        parsed_continue_no_watcher = parser.parse_args(
+            [
+                "continue",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+                "--follow-up-prompt-file",
+                "-",
+                "--no-watcher",
+            ]
+        )
+        self.assertFalse(parsed_continue_no_watcher.ensure_watcher)
 
         subparser_action = next(
             action
@@ -1436,11 +1503,13 @@ class OpenCodeManagerTests(unittest.TestCase):
         start_help = subparser_action.choices["start"].format_help()
         self.assertIn("--first-prompt", start_help)
         self.assertIn("--first-prompt-file", start_help)
+        self.assertIn("--no-watcher", start_help)
         continue_help = subparser_action.choices["continue"].format_help()
         self.assertIn("--follow-up-prompt", continue_help)
         self.assertIn("--follow-up-prompt-file", continue_help)
         self.assertIn("--ensure-watcher", continue_help)
-        self.assertIn("normal conversation-driven agent usage", continue_help)
+        self.assertIn("--no-watcher", continue_help)
+        self.assertIn("ensured by default", continue_help)
 
         parsed_history = parser.parse_args(
             [
@@ -1509,6 +1578,7 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--first-prompt-file", readme)
         self.assertIn("stdin", readme)
         self.assertIn("--ensure-watcher", readme)
+        self.assertIn("--no-watcher", readme)
         self.assertIn("normal conversation-driven usage", readme)
         self.assertIn("keep any watcher attached unless the user explicitly asks", readme)
         self.assertIn("inspect-history", readme)
@@ -1533,7 +1603,8 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("acknowledge_and_end_turn", skill)
         self.assertIn("preflight that path on the current host", skill)
         self.assertIn("stop-session", skill)
-        self.assertIn("Starting / continuing work should normally ensure a watcher", skill)
+        self.assertIn("Starting / continuing work should normally ensure a watcher is present", skill)
+        self.assertIn("--no-watcher", skill)
         self.assertIn("use `stop-watcher` or `detach` only when the user explicitly asks", skill)
         self.assertIn("opencodeUiUrl", skill)
         self.assertIn("base64url(workspace-no-padding)", skill)

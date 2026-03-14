@@ -2157,6 +2157,9 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         text_flag="--first-prompt",
         file_flag="--first-prompt-file",
     )
+    watcher_requested = bool(getattr(args, "ensure_watcher", True))
+    if watcher_requested and not getattr(args, "openclaw_session_key", None):
+        raise ValueError("start requires --openclaw-session-key unless --no-watcher is set")
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=args.watch_timeout_sec)
     created_session = client.create_session(directory=args.opencode_workspace, title=args.title)
@@ -2173,25 +2176,27 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         asynchronous=True,
     )
 
-    watcher_entry = start_or_attach_watcher(
-        registry_path=registry_path,
-        opencode_base_url=args.opencode_base_url,
-        opencode_session_id=opencode_session_id,
-        opencode_workspace=args.opencode_workspace,
-        openclaw_session_key=args.openclaw_session_key,
-        openclaw_delivery_target=args.openclaw_delivery_target,
-        opencode_token=resolved_opencode_token,
-        opencode_token_env=args.opencode_token_env if resolved_opencode_token is None else None,
-        watch_live=args.watch_live,
-        watch_interval_sec=args.watch_interval_sec,
-        idle_timeout_sec=args.idle_timeout_sec,
-        notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
-        notify_min_priority=getattr(args, "notify_min_priority", "low"),
-        notify_keywords=getattr(args, "notify_keyword", []),
-        notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
-        watch_message_limit=args.watch_message_limit,
-        watch_timeout_sec=args.watch_timeout_sec,
-    )
+    watcher_entry = None
+    if watcher_requested:
+        watcher_entry = start_or_attach_watcher(
+            registry_path=registry_path,
+            opencode_base_url=args.opencode_base_url,
+            opencode_session_id=opencode_session_id,
+            opencode_workspace=args.opencode_workspace,
+            openclaw_session_key=args.openclaw_session_key,
+            openclaw_delivery_target=args.openclaw_delivery_target,
+            opencode_token=resolved_opencode_token,
+            opencode_token_env=args.opencode_token_env if resolved_opencode_token is None else None,
+            watch_live=args.watch_live,
+            watch_interval_sec=args.watch_interval_sec,
+            idle_timeout_sec=args.idle_timeout_sec,
+            notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
+            notify_min_priority=getattr(args, "notify_min_priority", "low"),
+            notify_keywords=getattr(args, "notify_keyword", []),
+            notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
+            watch_message_limit=args.watch_message_limit,
+            watch_timeout_sec=args.watch_timeout_sec,
+        )
 
     result = {
         "kind": "opencode_manager_start_v1",
@@ -2203,10 +2208,11 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
             "promptFile": first_prompt.get("promptFile"),
             "promptPreview": preview_text(first_prompt["text"]),
         },
-        "watcher": build_watcher_summary(watcher_entry),
         "registryPath": str(registry_path),
     }
-    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=True))
+    if watcher_entry:
+        result["watcher"] = build_watcher_summary(watcher_entry)
+    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=watcher_requested))
     return result
 
 
@@ -2270,6 +2276,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         text_flag="--follow-up-prompt",
         file_flag="--follow-up-prompt-file",
     )
+    watcher_requested = bool(getattr(args, "ensure_watcher", True))
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     timeout = args.watch_timeout_sec if args.watch_timeout_sec is not None else DEFAULT_TIMEOUT_SEC
     client = OpenCodeClient(base_url=args.opencode_base_url, token=resolved_opencode_token, timeout=timeout)
@@ -2287,7 +2294,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     watcher_payload = None
-    if args.ensure_watcher:
+    if watcher_requested:
         watcher_payload = resolve_continue_watcher_request(args=args, session_data=session_data, registry_path=registry_path)
     else:
         with locked_registry(registry_path) as (registry, _path):
@@ -2312,13 +2319,13 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
             "promptFile": follow_up_prompt.get("promptFile"),
             "promptPreview": preview_text(follow_up_prompt["text"]),
         },
-        "ensureWatcherRequested": bool(args.ensure_watcher),
+        "ensureWatcherRequested": watcher_requested,
         "registryPath": str(registry_path),
     }
     if watcher_payload:
         result["watcher"] = watcher_payload["watcher"]
         result["watcherAlreadyRunning"] = bool(watcher_payload["alreadyRunning"])
-    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=bool(args.ensure_watcher)))
+    result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=watcher_requested))
     return result
 
 
@@ -2523,10 +2530,28 @@ def add_common_runtime_options(
 
 
 
+def add_optional_watcher_mode_options(command_parser: argparse.ArgumentParser) -> None:
+    watcher_group = command_parser.add_mutually_exclusive_group()
+    watcher_group.add_argument(
+        "--ensure-watcher",
+        dest="ensure_watcher",
+        action="store_true",
+        help="explicitly ensure a watcher binding exists (default behavior; kept for compatibility)",
+    )
+    watcher_group.add_argument(
+        "--no-watcher",
+        dest="ensure_watcher",
+        action="store_false",
+        help="opt out of starting or re-binding a watcher for this command",
+    )
+    command_parser.set_defaults(ensure_watcher=True)
+
+
+
 def add_continue_watcher_options(command_parser: argparse.ArgumentParser) -> None:
     command_parser.add_argument("--openclaw-session-key")
     command_parser.add_argument("--openclaw-delivery-target")
-    command_parser.add_argument("--ensure-watcher", action="store_true")
+    add_optional_watcher_mode_options(command_parser)
     command_parser.add_argument("--watch-live", dest="watch_live", action="store_const", const=True, default=None)
     command_parser.add_argument("--watch-dry-run", dest="watch_live", action="store_const", const=False)
     command_parser.add_argument("--watch-interval-sec", type=int)
@@ -2574,10 +2599,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     start_parser = sub.add_parser(
         "start",
-        help="create a new OpenCode session, send the first prompt, and attach a watcher",
-        description="Create a new OpenCode session, send the first prompt (inline or via --first-prompt-file), and attach a watcher.",
+        help="create a new OpenCode session, send the first prompt, and ensure a watcher by default",
+        description="Create a new OpenCode session, send the first prompt (inline or via --first-prompt-file), and ensure a watcher by default. Use --no-watcher to opt out.",
     )
-    add_common_runtime_options(start_parser, require_openclaw_session_key=True, require_workspace=True)
+    add_common_runtime_options(start_parser, require_openclaw_session_key=False, require_workspace=True)
+    add_optional_watcher_mode_options(start_parser)
     start_parser.add_argument("--title")
     add_prompt_options(
         start_parser,
@@ -2594,8 +2620,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     continue_parser = sub.add_parser(
         "continue",
-        help="send a follow-up prompt to an existing OpenCode session; normal agent usage should also ensure watcher routing via --ensure-watcher",
-        description="Send a follow-up prompt (inline or via --follow-up-prompt-file) to an existing OpenCode session. For normal conversation-driven agent usage, also pass --ensure-watcher so later progress keeps routing back to the originating OpenClaw session; omit it only for explicit no-watcher/debug intent.",
+        help="send a follow-up prompt to an existing OpenCode session; watcher routing is ensured by default unless --no-watcher is set",
+        description="Send a follow-up prompt (inline or via --follow-up-prompt-file) to an existing OpenCode session. For normal conversation-driven agent usage, watcher routing is ensured by default so later progress keeps routing back to the originating OpenClaw session; use --no-watcher only for explicit no-watcher/debug intent. --ensure-watcher remains accepted as an explicit compatibility alias.",
     )
     continue_parser.add_argument("--opencode-base-url", required=True)
     continue_parser.add_argument("--opencode-token")
