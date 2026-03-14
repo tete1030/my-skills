@@ -127,6 +127,49 @@ def resolve_prompt_input(
 
 
 
+def parse_model_override(value: Any) -> dict[str, str] | None:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    if "/" not in text:
+        raise ValueError("--opencode-model must be in providerID/modelID form, for example openai/gpt-5")
+    provider_id, model_id = text.split("/", 1)
+    provider_id = provider_id.strip()
+    model_id = model_id.strip()
+    if not provider_id or not model_id:
+        raise ValueError("--opencode-model must be in providerID/modelID form, for example openai/gpt-5")
+    return {"providerID": provider_id, "modelID": model_id}
+
+
+
+def resolve_prompt_overrides(args: argparse.Namespace) -> dict[str, Any]:
+    model = parse_model_override(getattr(args, "opencode_model", None))
+    agent = getattr(args, "opencode_agent", None)
+    variant = getattr(args, "opencode_variant", None)
+    agent_text = str(agent).strip() if agent is not None else None
+    variant_text = str(variant).strip() if variant is not None else None
+    return {
+        "model": model,
+        "agent": agent_text or None,
+        "variant": variant_text or None,
+    }
+
+
+
+def summarize_prompt_overrides(overrides: dict[str, Any]) -> dict[str, Any] | None:
+    result: dict[str, Any] = {}
+    if overrides.get("agent") is not None:
+        result["agent"] = overrides["agent"]
+    if overrides.get("model") is not None:
+        result["model"] = overrides["model"]
+    if overrides.get("variant") is not None:
+        result["variant"] = overrides["variant"]
+    return result or None
+
+
+
 def watcher_root_for_registry_path(registry_path: Path) -> Path:
     if registry_path.resolve() == DEFAULT_REGISTRY_PATH.resolve():
         return DEFAULT_WATCHER_ROOT
@@ -2157,6 +2200,8 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         text_flag="--first-prompt",
         file_flag="--first-prompt-file",
     )
+    prompt_overrides = resolve_prompt_overrides(args)
+    requested_overrides = summarize_prompt_overrides(prompt_overrides)
     watcher_requested = bool(getattr(args, "ensure_watcher", True))
     if watcher_requested and not getattr(args, "openclaw_session_key", None):
         raise ValueError("start requires --openclaw-session-key unless --no-watcher is set")
@@ -2173,6 +2218,9 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         opencode_session_id,
         directory=args.opencode_workspace,
         parts=[{"type": "text", "text": first_prompt["text"]}],
+        model=prompt_overrides["model"],
+        agent=prompt_overrides["agent"],
+        variant=prompt_overrides["variant"],
         asynchronous=True,
     )
 
@@ -2210,6 +2258,8 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
         },
         "registryPath": str(registry_path),
     }
+    if requested_overrides:
+        result["promptOverrides"] = requested_overrides
     if watcher_entry:
         result["watcher"] = build_watcher_summary(watcher_entry)
     result.update(build_agent_handoff_contract(watcher_entry=watcher_entry, watcher_requested=watcher_requested))
@@ -2276,6 +2326,8 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         text_flag="--follow-up-prompt",
         file_flag="--follow-up-prompt-file",
     )
+    prompt_overrides = resolve_prompt_overrides(args)
+    requested_overrides = summarize_prompt_overrides(prompt_overrides)
     watcher_requested = bool(getattr(args, "ensure_watcher", True))
     resolved_opencode_token = resolve_opencode_token(args.opencode_token, args.opencode_token_env)
     timeout = args.watch_timeout_sec if args.watch_timeout_sec is not None else DEFAULT_TIMEOUT_SEC
@@ -2290,6 +2342,9 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         args.opencode_session_id,
         directory=args.opencode_workspace or session_data.get("directory"),
         parts=[{"type": "text", "text": follow_up_prompt["text"]}],
+        model=prompt_overrides["model"],
+        agent=prompt_overrides["agent"],
+        variant=prompt_overrides["variant"],
         asynchronous=True,
     )
 
@@ -2322,6 +2377,8 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         "ensureWatcherRequested": watcher_requested,
         "registryPath": str(registry_path),
     }
+    if requested_overrides:
+        result["promptOverrides"] = requested_overrides
     if watcher_payload:
         result["watcher"] = watcher_payload["watcher"]
         result["watcherAlreadyRunning"] = bool(watcher_payload["alreadyRunning"])
@@ -2591,6 +2648,16 @@ def add_prompt_options(
 
 
 
+def add_prompt_override_options(command_parser: argparse.ArgumentParser) -> None:
+    command_parser.add_argument("--opencode-agent", help="override the OpenCode agent for this prompt/run")
+    command_parser.add_argument(
+        "--opencode-model",
+        help="override the OpenCode model for this prompt/run in providerID/modelID form, for example openai/gpt-5",
+    )
+    command_parser.add_argument("--opencode-variant", help="override the OpenCode reasoning/model variant for this prompt/run")
+
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Phase 2 OpenCode manager: create or attach watchers, continue existing sessions, inspect state, drill into recent history, request a real OpenCode session stop via abort API, stop/detach watchers, and recover local watcher registry entries."
@@ -2612,6 +2679,7 @@ def build_parser() -> argparse.ArgumentParser:
         text_help="inline first prompt text",
         file_help="read first prompt text from a UTF-8 file path or '-' for stdin",
     )
+    add_prompt_override_options(start_parser)
     start_parser.set_defaults(func=start_command)
 
     attach_parser = sub.add_parser("attach", help="attach a watcher to an existing OpenCode session")
@@ -2635,6 +2703,7 @@ def build_parser() -> argparse.ArgumentParser:
         text_help="inline follow-up prompt text",
         file_help="read follow-up prompt text from a UTF-8 file path or '-' for stdin",
     )
+    add_prompt_override_options(continue_parser)
     add_continue_watcher_options(continue_parser)
     continue_parser.set_defaults(func=continue_command)
 

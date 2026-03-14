@@ -22,6 +22,7 @@ from opencode_manager import (  # noqa: E402
     inspect_command,
     inspect_history_command,
     list_watchers_command,
+    parse_model_override,
     refresh_registry_entry,
     save_json_object,
     start_command,
@@ -383,6 +384,9 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "ses_demo",
                 directory="/tmp/demo-workspace",
                 parts=[{"type": "text", "text": "line 1 with `backticks`\nline 2"}],
+                model=None,
+                agent=None,
+                variant=None,
                 asynchronous=True,
             )
             self.assertEqual(result["firstPrompt"]["inputMethod"], "file")
@@ -427,6 +431,65 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(result["handoffMode"], "no_watcher")
             self.assertTrue(result["firstPrompt"]["accepted"])
             self.assertNotIn("watcher", result)
+
+    def test_start_command_forwards_agent_model_and_variant_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start with explicit runtime overrides",
+                first_prompt_file=None,
+                opencode_agent="build",
+                opencode_model="openai/gpt-5",
+                opencode_variant="high",
+                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
+                openclaw_delivery_target="telegram:-100123:topic:42",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ):
+                result = start_command(args)
+
+            fake_client.prompt_session.assert_called_once_with(
+                "ses_demo",
+                directory="/tmp/demo-workspace",
+                parts=[{"type": "text", "text": "please start with explicit runtime overrides"}],
+                model={"providerID": "openai", "modelID": "gpt-5"},
+                agent="build",
+                variant="high",
+                asynchronous=True,
+            )
+            self.assertEqual(
+                result["promptOverrides"],
+                {
+                    "agent": "build",
+                    "model": {"providerID": "openai", "modelID": "gpt-5"},
+                    "variant": "high",
+                },
+            )
 
     def test_inspect_command_returns_rehydration_block_with_window_coverage(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1076,6 +1139,9 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "ses_demo",
                 directory="/tmp/demo-workspace",
                 parts=[{"type": "text", "text": "continue via stdin with `video-sum run`\nsecond line"}],
+                model=None,
+                agent=None,
+                variant=None,
                 asynchronous=True,
             )
             self.assertEqual(result["followUpPrompt"]["inputMethod"], "stdin")
@@ -1118,6 +1184,57 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIn("OpenClaw", result["userFacingAck"])
             self.assertNotIn("watcher", result)
             fake_client.prompt_session.assert_called_once()
+
+    def test_continue_command_forwards_agent_model_and_variant_overrides(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue with explicit runtime overrides",
+                opencode_agent="build",
+                opencode_model="openai/gpt-5",
+                opencode_variant="medium",
+                ensure_watcher=False,
+                openclaw_session_key=None,
+                openclaw_delivery_target=None,
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                registry_path=str(registry_path),
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ):
+                result = continue_command(args)
+
+            fake_client.prompt_session.assert_called_once_with(
+                "ses_demo",
+                directory="/tmp/demo-workspace",
+                parts=[{"type": "text", "text": "please continue with explicit runtime overrides"}],
+                model={"providerID": "openai", "modelID": "gpt-5"},
+                agent="build",
+                variant="medium",
+                asynchronous=True,
+            )
+            self.assertEqual(
+                result["promptOverrides"],
+                {
+                    "agent": "build",
+                    "model": {"providerID": "openai", "modelID": "gpt-5"},
+                    "variant": "medium",
+                },
+            )
 
     def test_stop_session_command_rejects_explicit_workspace_mismatch_before_abort(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1443,12 +1560,21 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "agent:main:telegram:group:-100123:topic:42",
                 "--first-prompt-file",
                 "prompt.txt",
+                "--opencode-agent",
+                "build",
+                "--opencode-model",
+                "openai/gpt-5",
+                "--opencode-variant",
+                "high",
             ]
         )
         self.assertEqual(parsed_start.command, "start")
         self.assertEqual(parsed_start.first_prompt_file, "prompt.txt")
         self.assertIsNone(parsed_start.first_prompt)
         self.assertTrue(parsed_start.ensure_watcher)
+        self.assertEqual(parsed_start.opencode_agent, "build")
+        self.assertEqual(parsed_start.opencode_model, "openai/gpt-5")
+        self.assertEqual(parsed_start.opencode_variant, "high")
 
         parsed_start_no_watcher = parser.parse_args(
             [
@@ -1473,6 +1599,12 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "ses_demo",
                 "--follow-up-prompt-file",
                 "-",
+                "--opencode-agent",
+                "build",
+                "--opencode-model",
+                "openai/gpt-5",
+                "--opencode-variant",
+                "medium",
             ]
         )
         self.assertEqual(parsed_continue.command, "continue")
@@ -1480,6 +1612,9 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_continue.follow_up_prompt_file, "-")
         self.assertIsNone(parsed_continue.follow_up_prompt)
         self.assertTrue(parsed_continue.ensure_watcher)
+        self.assertEqual(parsed_continue.opencode_agent, "build")
+        self.assertEqual(parsed_continue.opencode_model, "openai/gpt-5")
+        self.assertEqual(parsed_continue.opencode_variant, "medium")
 
         parsed_continue_no_watcher = parser.parse_args(
             [
@@ -1503,10 +1638,16 @@ class OpenCodeManagerTests(unittest.TestCase):
         start_help = subparser_action.choices["start"].format_help()
         self.assertIn("--first-prompt", start_help)
         self.assertIn("--first-prompt-file", start_help)
+        self.assertIn("--opencode-agent", start_help)
+        self.assertIn("--opencode-model", start_help)
+        self.assertIn("--opencode-variant", start_help)
         self.assertIn("--no-watcher", start_help)
         continue_help = subparser_action.choices["continue"].format_help()
         self.assertIn("--follow-up-prompt", continue_help)
         self.assertIn("--follow-up-prompt-file", continue_help)
+        self.assertIn("--opencode-agent", continue_help)
+        self.assertIn("--opencode-model", continue_help)
+        self.assertIn("--opencode-variant", continue_help)
         self.assertIn("--ensure-watcher", continue_help)
         self.assertIn("--no-watcher", continue_help)
         self.assertIn("ensured by default", continue_help)
@@ -1554,6 +1695,11 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_stop.command, "stop-watcher")
         self.assertEqual(parsed_stop.watcher_id, "ow_demo123")
 
+    def test_parse_model_override_requires_provider_and_model(self):
+        self.assertEqual(parse_model_override("openai/gpt-5"), {"providerID": "openai", "modelID": "gpt-5"})
+        with self.assertRaises(ValueError):
+            parse_model_override("gpt-5")
+
     def test_watcher_summary_keeps_explicit_field_names(self):
         summary = build_watcher_summary(
             {
@@ -1576,6 +1722,9 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--follow-up-prompt", readme)
         self.assertIn("--follow-up-prompt-file", readme)
         self.assertIn("--first-prompt-file", readme)
+        self.assertIn("--opencode-agent", readme)
+        self.assertIn("--opencode-model", readme)
+        self.assertIn("--opencode-variant", readme)
         self.assertIn("stdin", readme)
         self.assertIn("--ensure-watcher", readme)
         self.assertIn("--no-watcher", readme)
@@ -1611,6 +1760,9 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("opencode_manager.py", skill)
         self.assertIn("--follow-up-prompt-file", skill)
         self.assertIn("--first-prompt-file", skill)
+        self.assertIn("--opencode-agent", skill)
+        self.assertIn("--opencode-model", skill)
+        self.assertIn("--opencode-variant", skill)
         self.assertIn("stdin", skill)
 
 

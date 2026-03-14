@@ -69,6 +69,7 @@ Watcher notification shaping is available when token churn matters: use `--notif
 Key CLI facts that matter in the hot path:
 
 - `start` accepts `--first-prompt` or the safer `--first-prompt-file` (`-` = stdin); prefer file/stdin when the prompt is long, multiline, or shell-sensitive, and watcher setup is part of the default `start` path unless `--no-watcher` is set
+- `start` and `continue` both accept optional OpenCode run overrides: `--opencode-agent`, `--opencode-model <providerID/modelID>` (for example `openai/gpt-5`), and `--opencode-variant`; if omitted, leave the current OpenCode defaults unchanged
 - `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin)
 - for normal agent usage, `continue` should preserve watcher routing by default; use `--no-watcher` only for explicit no-watcher/debug intent (`--ensure-watcher` remains accepted as a compatibility alias)
 - `stop-session` calls the verified real abort API instead of faking a stop with another prompt, and by default should leave the watcher running so it can observe/report the terminal state

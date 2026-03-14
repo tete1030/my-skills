@@ -28,6 +28,7 @@ Use the manager entrypoint for the current session/watcher workflow:
 Key points:
 
 - `start` accepts `--first-prompt` or the safer `--first-prompt-file` (`-` = stdin); prefer file/stdin for long or shell-sensitive prompts.
+- `start` and `continue` both accept optional prompt/run overrides: `--opencode-agent`, `--opencode-model <providerID/modelID>` (for example `openai/gpt-5`), and `--opencode-variant`. If omitted, the current OpenCode defaults stay unchanged.
 - `start` now ensures watcher setup by default for normal conversation-driven usage; use `--no-watcher` only when you explicitly want no routed progress/debug mode.
 - `continue` accepts `--follow-up-prompt` or the safer `--follow-up-prompt-file` (`-` = stdin); for normal agent usage it now ensures watcher routing by default so later progress returns to the originating OpenClaw session. Use `--no-watcher` to opt out; `--ensure-watcher` remains accepted as a compatibility alias.
 - Watchers now support notification shaping knobs for token control: `--notify-min-interval-sec` (rate-limit non-critical updates), `--notify-min-priority low|normal|high`, and repeated `--notify-keyword <term>` filters. Critical updates (failed/blocked/completed) bypass these non-critical filters by default.
