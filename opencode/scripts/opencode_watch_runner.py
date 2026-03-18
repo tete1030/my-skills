@@ -111,7 +111,6 @@ def watch_activity_signature(turn: dict[str, Any], agent_call: dict[str, Any]) -
         "taskClusterKey": task_cluster.get("key"),
         "clusterStateRank": task_cluster.get("clusterStateRank"),
         "detailRank": task_cluster.get("detailRank"),
-        "sourceUpdateMs": task_cluster.get("sourceUpdateMs"),
     }
     return json.dumps(signature_payload, ensure_ascii=False, sort_keys=True)
 

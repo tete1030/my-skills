@@ -49,8 +49,9 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 
 - Fresh work in a workspace -> `start` (normal path: this ensures a watcher for the provided OpenClaw session by default; use `--no-watcher` only when the caller explicitly wants no routed progress or is doing narrow runtime/debug work)
 - Need to find an existing session first -> `list-sessions`
-- Need current state of one existing session -> `inspect` (now returns a compact `rehydration` block for takeover/current-state rebuild)
-- Need more detail on one recent message/event after inspect/attach, including recent shell output or what happened between inspect points -> `inspect-history` (`--recent-index 0` = latest, then 1/2 if needed, or use `--message-id`)
+- Need current state of one existing session -> `inspect` (default output is compact timeline text; use `--format json` only when explicitly needed)
+- Need more detail on one recent message/event after inspect/attach -> first use `inspect --expand-index <n>` (single-item drill-down from the timeline)
+- Need older/broader lookup that `--expand-index` cannot cover -> `inspect-history` (`--recent-index 0` = latest, then 1/2 if needed, or use `--message-id`)
 - Need to send more work into an existing session -> `continue` by default (normal path ensures watcher routing automatically; pass the current `--openclaw-session-key` explicitly for watcher-bound continues, because implicit reuse of an older watcher binding is now treated as unsafe; use `--no-watcher` only if the user explicitly wants no watcher / no routed progress, or you are doing narrow runtime debugging)
 - Need to really stop the OpenCode run itself -> `stop-session` (real abort API, not a pause-like follow-up prompt; keep any watcher attached unless the user explicitly asks to stop monitoring too; if `--opencode-workspace` is supplied it must match the session's actual directory)
 - Need watcher routing back to this OpenClaw session for an existing session -> `attach` or `continue` (`attach` now also returns the same immediate inspection/rehydration payload; `--ensure-watcher` remains accepted as an explicit compatibility alias, but default usage should not require it)
@@ -115,11 +116,11 @@ Do not echo raw `systemEvent`, JSON, headers, tags, or watcher wording.
 Use this rule set:
 
 - Read `runtimeSignal` before anything else.
-- Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and targeted `inspect-history` drill-down when needed.
+- Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and targeted drill-down only when needed.
 - If `runtimeSignal.action=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` for that `opencodeSessionId`, then speak from the inspected current state.
-- If that inspect still leaves a real gap, proactively do **one narrow** `inspect-history` lookup yourself—usually `--recent-index 0`, then `1`/`2` if needed, or `--message-id` when the inspection already points to the exact message.
-- Use `inspect-history` both for older relevant history and for “what happened between inspect points?” questions such as recent shell/tool output, stdout tail lines, or read/write/patch details.
-- After that one inspect (plus at most the narrow gap-filling drill-down above), do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
+- If that inspect still leaves a real gap, first do **one narrow** `inspect --expand-index <n>` lookup (pick the timeline item that matches the question).
+- Use `inspect-history` only as fallback for older/broader lookup that `--expand-index` cannot cover (including “what happened between inspect points?” when older context is outside the compact timeline window).
+- After that one inspect (plus at most one narrow drill-down), do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
 - For one task cluster, prefer at most **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
 - Same-state / repeated `completed` / low-value updates should usually stay silent.
 

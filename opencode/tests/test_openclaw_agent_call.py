@@ -28,8 +28,8 @@ class OpenClawAgentCallTests(unittest.TestCase):
             },
             "shouldSend": True,
             "delivery": {
-                "originSession": "agent:main:telegram:group:-100123:topic:42",
-                "originTarget": "telegram:-100123:topic:42",
+                "originSession": "agent:main:discord:target:example-origin-thread",
+                "originTarget": "discord:example-origin-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -59,7 +59,7 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertFalse(plan["handoffDryRun"])
         self.assertEqual(plan["deliveryAction"], "inject")
         self.assertEqual(plan["routeStatus"], "ready")
-        self.assertEqual(plan["sessionKey"], "agent:main:telegram:group:-100123:topic:42")
+        self.assertEqual(plan["sessionKey"], "agent:main:discord:target:example-origin-thread")
         self.assertEqual(plan["gatewayMethod"], "agent")
         self.assertEqual(plan["gatewayParams"]["sessionKey"], plan["sessionKey"])
         self.assertTrue(plan["gatewayParams"]["deliver"])
@@ -69,26 +69,22 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertIn("</opencodeEvent>", message)
         self.assertIn("OPENCODE_ORIGIN_SESSION_SYSTEM_EVENT_V1", message)
         preamble, wrapped_event = message.split("<opencodeEvent>\n", 1)
+        preamble_lines = [line for line in preamble.splitlines() if line.strip()]
         self.assertEqual(
-            [line for line in preamble.splitlines() if line.strip()],
+            preamble_lines,
             [
-                "Internal runtime signal for the current conversation.",
-                "Inspect ses_release_demo once, then base any visible reply on that inspected current state rather than this event text.",
-                "Prefer rehydration.currentState and rehydration.sinceLatestUserInput from that inspect.",
-                "If inspect alone still leaves a real gap, proactively run one targeted inspect-history drill-down (usually --recent-index 0/1/2, or --message-id when the inspection already points to one).",
-                "Use that drill-down for both relevant older history and 'what happened between inspect points?' questions, especially recent shell/tool output or stdout tail lines.",
-                "Do not fetch broad history by default; only do the narrow lookup needed to answer.",
+                "Runtime signal for the current conversation.",
+                "Inspect ses_release_demo once and answer from inspected current state, not from this event body.",
+                "Use rehydration.currentState plus rehydration.sinceLatestUserInput.",
+                "If detail is missing, expand one timeline item via inspect --expand-index N; use inspect-history only for older/broader fallback.",
                 "Do not start or attach a watcher, and do not keep polling from this session.",
-                "Reply visibly only if the inspected current state adds net-new user-visible progress for this task cluster.",
-                "A newer user input inside the OpenCode session does not reset same-cluster reply allowances in this chat.",
-                "Small exception: when rehydration.sinceLatestUserInput.assistantMessageCount == 0 and the inspected state is still running with meaningful progress, you may send one short visible progress reply for this task cluster.",
-                "Across one same-cluster chain, prefer at most one visible running/progress reply and at most one visible terminal completion/failure reply.",
-                "Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.",
-                "If this chat already received a visible same-cluster terminal/status reply, later same-cluster terminal/status updates are NO_REPLY unless the earlier reply was clearly wrong.",
-                "After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.",
-                "When suppressing, output the single token NO_REPLY and nothing else—no explanation, prefix, suffix, bullets, or code fences.",
+                "Send a visible reply only when inspected state adds net-new user-visible progress for this task cluster.",
+                "Across this chat's same-cluster chain (even if newer OpenCode user input appears), allow at most one running progress reply and one first terminal reply; later equal/weaker/duplicate/superseded states are NO_REPLY.",
+                "When suppressing, output exactly NO_REPLY.",
             ],
         )
+        self.assertLessEqual(len(preamble_lines), 8)
+        self.assertLessEqual(len(preamble), 900)
         self.assertTrue(wrapped_event.endswith("\n</opencodeEvent>"))
         self.assertNotIn("lightweight runtime signal", message)
         self.assertNotIn("one one-off inspect", message)
@@ -117,18 +113,19 @@ class OpenClawAgentCallTests(unittest.TestCase):
         self.assertNotIn("same-cluster progress reply", message)
         self.assertIn("Inspect ses_release_demo once", message)
 
-    def test_same_cluster_guidance_preserves_first_terminal_reply(self):
+    def test_same_cluster_guidance_preserves_terminal_and_no_reply_rules(self):
         plan = build_gateway_agent_call(self.ready_handoff(), timeout_ms=15000)
         message = plan["gatewayParams"]["message"]
 
         self.assertIn(
-            "Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.",
+            "allow at most one running progress reply and one first terminal reply",
             message,
         )
         self.assertIn(
-            "After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.",
+            "later equal/weaker/duplicate/superseded states are NO_REPLY",
             message,
         )
+        self.assertIn("output exactly NO_REPLY", message)
 
     def test_idempotency_key_ignores_cadence_only_changes(self):
         first_turn = self.ready_turn()
@@ -166,10 +163,10 @@ class OpenClawAgentCallTests(unittest.TestCase):
             first_basis,
             {
                 "kind": "opencode_origin_session_handoff_idempotency_v1",
-                "sessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "sessionKey": "agent:main:discord:target:example-origin-thread",
                 "routing": {
-                    "originSession": "agent:main:telegram:group:-100123:topic:42",
-                    "originTarget": "telegram:-100123:topic:42",
+                    "originSession": "agent:main:discord:target:example-origin-thread",
+                    "originTarget": "discord:example-origin-thread",
                 },
                 "action": "send_update",
                 "updateType": "completed",
@@ -207,8 +204,8 @@ class OpenClawAgentCallTests(unittest.TestCase):
         def turn_from_payload(payload):
             return build_turn_result(
                 payload,
-                origin_session="agent:main:telegram:group:-100123:topic:42",
-                origin_target="telegram:-100123:topic:42",
+                origin_session="agent:main:discord:target:example-origin-thread",
+                origin_target="discord:example-origin-thread",
                 session_id="ses_release_demo",
             )
 
@@ -302,7 +299,7 @@ class OpenClawAgentCallTests(unittest.TestCase):
             "shouldSend": True,
             "delivery": {
                 "originSession": None,
-                "originTarget": "telegram:-100123:topic:42",
+                "originTarget": "discord:example-origin-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -356,7 +353,7 @@ class OpenClawAgentCallTests(unittest.TestCase):
 
     def test_execute_rejects_session_rewrite_attempts(self):
         handoff = self.ready_handoff()
-        handoff["openclawDelivery"]["systemEventTemplate"]["sessionKey"] = "agent:main:telegram:group:-100123:topic:999"
+        handoff["openclawDelivery"]["systemEventTemplate"]["sessionKey"] = "agent:main:discord:target:example-mismatched-thread"
 
         with self.assertRaisesRegex(ValueError, "refuses session rewrite"):
             build_gateway_agent_call(handoff)

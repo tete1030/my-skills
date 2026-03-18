@@ -41,12 +41,16 @@ DEFAULT_TIMEOUT_SEC = 20
 DEFAULT_STOP_TIMEOUT_SEC = 10
 DEFAULT_HISTORY_ANCHOR_COUNT = 6
 DEFAULT_TARGETED_HISTORY_RECENT_INDEXES = (0, 1, 2)
+DEFAULT_INSPECT_TIMELINE_LIMIT = 8
+DEFAULT_INSPECT_CONCLUSION_TEXT_LIMIT = 6000
 DETAIL_TEXT_LIMIT = 1200
 DETAIL_TEXT_PREVIEW_LIMIT = 240
 DETAIL_OUTPUT_TAIL_LINES = 4
 DETAIL_OUTPUT_TAIL_LINE_LIMIT = 180
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 WATCH_RUNTIME_START_KIND = "opencode_watch_runtime_start_v1"
+WATCH_LOG_BANNER_SCAN_BYTES = 256 * 1024
+WATCH_LOG_BANNER_SCAN_CHUNK_BYTES = 8192
 WATCHER_HANDOFF_ACK = "已交给 OpenCode，后续进展会由 watcher 继续回到当前 OpenClaw 会话。"
 NON_LIVE_WATCHER_ACK = "OpenCode 已收到请求，但当前 watcher 未处于 live 回传模式；后续不会自动回到这个 OpenClaw 会话。"
 MISSING_WATCHER_ACK = "OpenCode 已收到请求，但当前没有 live watcher 把后续进展回传到这个 OpenClaw 会话。"
@@ -96,6 +100,24 @@ def resolve_opencode_token(opencode_token: str | None, opencode_token_env: str |
 
 
 
+def normalize_inline_prompt_text(prompt_text: str) -> str:
+    """Best-effort normalize inline prompt text when upstream passed escaped newlines.
+
+    Preserve existing real newlines. Only decode when text has literal "\\n" markers
+    but no actual newline characters.
+    """
+    text = str(prompt_text)
+    if "\n" in text:
+        return text
+    if "\\n" not in text and "\\r" not in text and "\\t" not in text:
+        return text
+
+    normalized = text.replace("\\r\\n", "\n").replace("\\n", "\n")
+    normalized = normalized.replace("\\r", "\n").replace("\\t", "\t")
+    return normalized
+
+
+
 def resolve_prompt_input(
     prompt_text: str | None,
     prompt_file: str | None,
@@ -107,7 +129,7 @@ def resolve_prompt_input(
         raise ValueError(f"set either {text_flag} or {file_flag}, not both")
     if prompt_text is not None:
         return {
-            "text": prompt_text,
+            "text": normalize_inline_prompt_text(prompt_text),
             "inputMethod": "text",
         }
     if prompt_file is None:
@@ -347,11 +369,24 @@ def read_watch_state(watcher_state_path: Path) -> tuple[dict[str, Any], dict[str
 def read_watch_log_banner(watcher_log_path: Path) -> dict[str, Any]:
     if not watcher_log_path.exists():
         return {}
+
     try:
-        lines = watcher_log_path.read_text(encoding="utf-8").splitlines()
+        with watcher_log_path.open("rb") as handle:
+            prefix = bytearray()
+            while len(prefix) < WATCH_LOG_BANNER_SCAN_BYTES:
+                chunk = handle.read(min(WATCH_LOG_BANNER_SCAN_CHUNK_BYTES, WATCH_LOG_BANNER_SCAN_BYTES - len(prefix)))
+                if not chunk:
+                    break
+                prefix.extend(chunk)
     except OSError:
         return {}
-    for line in reversed(lines[-200:]):
+
+    text = prefix.decode("utf-8", errors="replace")
+    if len(prefix) >= WATCH_LOG_BANNER_SCAN_BYTES and not text.endswith(("\n", "\r")):
+        text = text.rsplit("\n", 1)[0] if "\n" in text else ""
+
+    banner: dict[str, Any] = {}
+    for line in text.splitlines():
         line = line.strip()
         if not line or not line.startswith("{"):
             continue
@@ -360,8 +395,8 @@ def read_watch_log_banner(watcher_log_path: Path) -> dict[str, Any]:
         except json.JSONDecodeError:
             continue
         if isinstance(payload, dict) and payload.get("kind") == WATCH_RUNTIME_START_KIND:
-            return payload
-    return {}
+            banner = payload
+    return banner
 
 
 
@@ -383,6 +418,7 @@ def build_recovered_entry_from_watcher_dir(
     watcher_dir: Path,
     *,
     runtime_processes: dict[str, dict[str, Any]] | None = None,
+    log_banner: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     watcher_id = watcher_dir.name
     paths = watcher_paths_for_id(watcher_id, watcher_root=watcher_dir.parent)
@@ -391,7 +427,7 @@ def build_recovered_entry_from_watcher_dir(
         return None
 
     config = load_json_object(config_path)
-    log_banner = read_watch_log_banner(paths["watcherLogPath"])
+    resolved_log_banner = log_banner if log_banner is not None else read_watch_log_banner(paths["watcherLogPath"])
     runtime_info = (runtime_processes or {}).get(str(config_path.resolve()))
 
     entry = {
@@ -413,8 +449,8 @@ def build_recovered_entry_from_watcher_dir(
         "notifyFilterCritical": bool(config.get("notifyFilterCritical") or config.get("notify_filter_critical") or False),
         "watchMessageLimit": config.get("watchMessageLimit") or config.get("message_limit"),
         "watchTimeoutSec": config.get("watchTimeoutSec") or config.get("timeout"),
-        "watchCreatedAt": log_banner.get("startedAt") or iso_from_epoch_ms(config_path.stat().st_mtime * 1000),
-        "watchStartedAt": log_banner.get("startedAt"),
+        "watchCreatedAt": resolved_log_banner.get("startedAt") or iso_from_epoch_ms(config_path.stat().st_mtime * 1000),
+        "watchStartedAt": resolved_log_banner.get("startedAt"),
         "watchProcessId": runtime_info.get("pid") if runtime_info else None,
         "watchProcessAlive": bool(runtime_info),
         "watcherConfigPath": str(config_path),
@@ -430,21 +466,27 @@ def refresh_registry_entry(
     *,
     registry_path: Path | None = None,
     runtime_processes: dict[str, dict[str, Any]] | None = None,
+    log_banner: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     refreshed = normalize_entry_paths(entry, registry_path=registry_path)
     config_path = Path(refreshed["watcherConfigPath"]).expanduser().resolve()
     state_path = Path(refreshed["watcherStatePath"]).expanduser().resolve()
     log_path = Path(refreshed["watcherLogPath"]).expanduser().resolve()
 
+    resolved_log_banner = log_banner if log_banner is not None else read_watch_log_banner(log_path)
+
     if config_path.exists():
-        recovered_from_disk = build_recovered_entry_from_watcher_dir(config_path.parent, runtime_processes=runtime_processes)
+        recovered_from_disk = build_recovered_entry_from_watcher_dir(
+            config_path.parent,
+            runtime_processes=runtime_processes,
+            log_banner=resolved_log_banner,
+        )
         if recovered_from_disk:
             disk_merged = dict(recovered_from_disk)
             disk_merged.update(refreshed)
             refreshed = disk_merged
 
     _watch_state_document, watch_state = read_watch_state(state_path)
-    log_banner = read_watch_log_banner(log_path)
     runtime_info = (runtime_processes or {}).get(str(config_path)) if runtime_processes is not None else list_watch_runtime_processes().get(str(config_path))
     stored_pid = refreshed.get("watchProcessId")
     stored_pid_alive = process_is_alive(stored_pid)
@@ -455,7 +497,7 @@ def refresh_registry_entry(
         refreshed["watcherStatus"] = "running"
         refreshed.pop("watchExitedAt", None)
         if not refreshed.get("watchStartedAt"):
-            refreshed["watchStartedAt"] = log_banner.get("startedAt") or now_iso()
+            refreshed["watchStartedAt"] = resolved_log_banner.get("startedAt") or now_iso()
     else:
         refreshed["watchProcessAlive"] = False
         if refreshed.get("watcherStatus") in {"running", "starting"}:
@@ -468,8 +510,8 @@ def refresh_registry_entry(
         if watch_state.get("lastExitedAt"):
             refreshed["watchExitedAt"] = watch_state.get("lastExitedAt")
 
-    if log_banner.get("startedAt") and not refreshed.get("watchStartedAt"):
-        refreshed["watchStartedAt"] = log_banner.get("startedAt")
+    if resolved_log_banner.get("startedAt") and not refreshed.get("watchStartedAt"):
+        refreshed["watchStartedAt"] = resolved_log_banner.get("startedAt")
 
     if watch_state:
         refreshed["lastWatchRunAt"] = watch_state.get("lastRunAt")
@@ -492,9 +534,37 @@ def refresh_registry_entry(
 
 
 
-def refresh_registry_entries(registry: dict[str, Any], *, registry_path: Path) -> dict[str, Any]:
+def entry_matches_refresh_target(
+    entry: dict[str, Any],
+    *,
+    watcher_id: str | None = None,
+    opencode_session_id: str | None = None,
+) -> bool:
+    if watcher_id and entry.get("watcherId") != watcher_id:
+        return False
+    if opencode_session_id and entry.get("opencodeSessionId") != opencode_session_id:
+        return False
+    return True
+
+
+
+def refresh_registry_entries(
+    registry: dict[str, Any],
+    *,
+    registry_path: Path,
+    recover_missing_from_disk: bool = False,
+    watcher_id: str | None = None,
+    opencode_session_id: str | None = None,
+) -> dict[str, Any]:
     runtime_processes = list_watch_runtime_processes()
     watcher_root = watcher_root_for_registry_path(registry_path)
+    watch_log_banners: dict[str, dict[str, Any]] = {}
+
+    def cached_log_banner(log_path: Path) -> dict[str, Any]:
+        resolved = str(log_path.expanduser().resolve())
+        if resolved not in watch_log_banners:
+            watch_log_banners[resolved] = read_watch_log_banner(Path(resolved))
+        return watch_log_banners[resolved]
 
     merged_entries: list[dict[str, Any]] = []
     by_watcher_id: dict[str, dict[str, Any]] = {}
@@ -502,34 +572,52 @@ def refresh_registry_entries(registry: dict[str, Any], *, registry_path: Path) -
 
     for original in registry.get("watchers") or []:
         normalized = normalize_entry_paths(original, registry_path=registry_path)
-        watcher_id = normalized.get("watcherId")
-        if isinstance(watcher_id, str) and watcher_id:
-            if watcher_id not in by_watcher_id:
-                watcher_order.append(watcher_id)
-                by_watcher_id[watcher_id] = normalized
+        watcher_id_value = normalized.get("watcherId")
+        if isinstance(watcher_id_value, str) and watcher_id_value:
+            if watcher_id_value not in by_watcher_id:
+                watcher_order.append(watcher_id_value)
+                by_watcher_id[watcher_id_value] = normalized
             else:
-                combined = dict(by_watcher_id[watcher_id])
+                combined = dict(by_watcher_id[watcher_id_value])
                 combined.update(normalized)
-                by_watcher_id[watcher_id] = combined
+                by_watcher_id[watcher_id_value] = combined
         else:
             merged_entries.append(normalized)
 
-    if watcher_root.exists():
+    if recover_missing_from_disk and watcher_root.exists():
         for watcher_dir in sorted(path for path in watcher_root.iterdir() if path.is_dir()):
-            recovered = build_recovered_entry_from_watcher_dir(watcher_dir, runtime_processes=runtime_processes)
+            log_banner = cached_log_banner(watcher_paths_for_id(watcher_dir.name, watcher_root=watcher_dir.parent)["watcherLogPath"])
+            recovered = build_recovered_entry_from_watcher_dir(
+                watcher_dir,
+                runtime_processes=runtime_processes,
+                log_banner=log_banner,
+            )
             if not recovered:
                 continue
-            watcher_id = recovered["watcherId"]
-            if watcher_id not in by_watcher_id:
-                watcher_order.append(watcher_id)
-                by_watcher_id[watcher_id] = recovered
+            recovered_watcher_id = recovered["watcherId"]
+            if recovered_watcher_id not in by_watcher_id:
+                watcher_order.append(recovered_watcher_id)
+                by_watcher_id[recovered_watcher_id] = recovered
             else:
                 combined = dict(recovered)
-                combined.update(by_watcher_id[watcher_id])
-                by_watcher_id[watcher_id] = combined
+                combined.update(by_watcher_id[recovered_watcher_id])
+                by_watcher_id[recovered_watcher_id] = combined
 
-    for watcher_id in watcher_order:
-        merged_entries.append(refresh_registry_entry(by_watcher_id[watcher_id], registry_path=registry_path, runtime_processes=runtime_processes))
+    for watcher_id_value in watcher_order:
+        entry = by_watcher_id[watcher_id_value]
+        if not entry_matches_refresh_target(entry, watcher_id=watcher_id, opencode_session_id=opencode_session_id):
+            merged_entries.append(entry)
+            continue
+        log_path_value = entry.get("watcherLogPath")
+        log_banner = cached_log_banner(Path(log_path_value)) if isinstance(log_path_value, str) and log_path_value else None
+        merged_entries.append(
+            refresh_registry_entry(
+                entry,
+                registry_path=registry_path,
+                runtime_processes=runtime_processes,
+                log_banner=log_banner,
+            )
+        )
 
     registry["watchers"] = merged_entries
     return registry
@@ -630,8 +718,30 @@ def value_non_empty(value: Any) -> bool:
 
 
 
+def snapshot_pending_prompts(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    prompts = snapshot.get("pendingPrompts")
+    if isinstance(prompts, list):
+        return [prompt for prompt in prompts if isinstance(prompt, dict)]
+    return []
+
+
+
+def snapshot_blocked_prompt_count(snapshot: dict[str, Any]) -> int:
+    count = snapshot.get("blockedPromptCount")
+    if isinstance(count, int):
+        return max(count, 0)
+    prompts = snapshot_pending_prompts(snapshot)
+    if prompts:
+        return len(prompts)
+    return -1
+
+
+
 def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str, Any], todo: dict[str, Any]) -> str:
-    if value_non_empty(snapshot.get("permission")) or value_non_empty(snapshot.get("question")):
+    blocked_prompt_count = snapshot_blocked_prompt_count(snapshot)
+    if blocked_prompt_count > 0:
+        return "blocked"
+    if blocked_prompt_count < 0 and (value_non_empty(snapshot.get("permission")) or value_non_empty(snapshot.get("question"))):
         return "blocked"
 
     raw_status = str(latest_message.get("status") or snapshot.get("status") or "").strip().lower()
@@ -816,6 +926,103 @@ def build_recent_notable_events(snapshot: dict[str, Any], *, limit: int = 5) -> 
     if not visible:
         return None
     return build_notable_event_items(visible, limit=limit)
+
+
+
+def summarize_timeline_event_line(event: dict[str, Any]) -> str | None:
+    kind = str(event.get("kind") or "").strip().lower()
+    role = str(event.get("role") or "").strip().lower()
+    summary = preview_text(event.get("summary"), limit=120)
+    tool_name = str(event.get("toolName") or "").strip().lower() or "tool"
+    tool_status = str(event.get("toolStatus") or "").strip().lower() or None
+
+    if kind == "user_input":
+        if summary:
+            return f"user: {summary}"
+        return "user"
+    if kind == "text":
+        speaker = "assistant" if role == "assistant" else (role or "message")
+        if summary:
+            return f"{speaker}: {summary}"
+        return speaker
+    if kind == "read":
+        target = shorten_path(summary or event.get("summary"), limit=90) if (summary or event.get("summary")) else None
+        return f"tool[read]: {target}" if target else "tool[read]"
+    if kind == "prune":
+        return "system: context compacted"
+    if kind == "tool":
+        if tool_status and tool_status not in {"completed", "ok", "success", "succeeded", "done", "finished"}:
+            return f"tool[{tool_name}]: {tool_status}"
+        return f"tool[{tool_name}]"
+
+    label = kind or "event"
+    if summary:
+        return f"{label}: {summary}"
+    return label
+
+
+
+def build_inspect_timeline(snapshot: dict[str, Any], *, limit: int) -> list[dict[str, Any]]:
+    visible = visible_snapshot_events(snapshot)
+    if not visible:
+        return []
+
+    selected = visible[-max(1, int(limit)) :]
+    timeline: list[dict[str, Any]] = []
+    for index, event in enumerate(selected, start=1):
+        line = summarize_timeline_event_line(event)
+        if not line:
+            continue
+        item = {
+            "index": index,
+            "line": line,
+            "kind": event.get("kind"),
+            "messageId": event.get("messageId"),
+            "createdAt": iso_from_epoch_ms(event.get("created")),
+        }
+        timeline.append({key: value for key, value in item.items() if value is not None})
+    return timeline
+
+
+
+def extract_message_text_body(message: dict[str, Any], *, limit: int = DEFAULT_INSPECT_CONCLUSION_TEXT_LIMIT) -> str | None:
+    parts = message.get("parts") if isinstance(message.get("parts"), list) else []
+    text_parts: list[str] = []
+    for part in parts:
+        if not isinstance(part, dict):
+            continue
+        if str(part.get("type") or "").strip().lower() != "text":
+            continue
+        text_value = part.get("text")
+        if text_value is None:
+            continue
+        text = str(text_value).strip()
+        if text:
+            text_parts.append(text)
+
+    if not text_parts:
+        return None
+    joined = "\n\n".join(text_parts).strip()
+    if not joined:
+        return None
+    if len(joined) <= limit:
+        return joined
+    return f"{joined[: max(0, limit - 1)]}…"
+
+
+
+def extract_latest_assistant_conclusion(messages: list[dict[str, Any]], *, limit: int = DEFAULT_INSPECT_CONCLUSION_TEXT_LIMIT) -> str | None:
+    for message in reversed(messages):
+        if not isinstance(message, dict):
+            continue
+        info = message.get("info") if isinstance(message.get("info"), dict) else {}
+        role = str(info.get("role") or message.get("role") or "").strip().lower()
+        if role != "assistant":
+            continue
+        text_body = extract_message_text_body(message, limit=limit)
+        if text_body:
+            return text_body
+    return None
 
 
 
@@ -1034,11 +1241,11 @@ def build_rehydration_follow_up_hints(
         use_inspect_history_when.insert(1, "Need older context outside the retained inspect window.")
     if running_progress_observation:
         use_inspect_history_when.append(
-            "Inspect still shows running without enough visible progress; inspect-history can confirm the latest assistant/tool step."
+            "If inspect still shows running without enough visible progress, expand one timeline item first; use inspect-history only if the gap remains."
         )
     if transport_error_hints:
         use_inspect_history_when.append(
-            "Transport/API errors may have hidden events; inspect-history can verify the latest durable message/output."
+            "If transport/API errors may have hidden events, expand one timeline item first; use inspect-history only to verify older durable output."
         )
     return {
         "preferTargetedLookup": True,
@@ -1100,6 +1307,51 @@ def build_inspect_latest_message(latest_message: dict[str, Any]) -> dict[str, An
 
 def build_inspect_watcher_summary(entry: dict[str, Any]) -> dict[str, Any]:
     return build_rehydration_watcher_state(entry) or {}
+
+
+
+def pending_prompt_kind_count(prompts: list[dict[str, Any]], kind: str) -> int:
+    return sum(1 for prompt in prompts if str(prompt.get("kind") or "").strip().lower() == kind)
+
+
+
+def build_current_blocker(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    pending_prompts = snapshot_pending_prompts(snapshot)
+    blocked_prompt_count = snapshot_blocked_prompt_count(snapshot)
+    if blocked_prompt_count <= 0 and not pending_prompts:
+        return None
+
+    prompt_items = [
+        {
+            key: value
+            for key, value in {
+                "kind": prompt.get("kind"),
+                "summary": prompt.get("summary"),
+                "promptKey": prompt.get("promptKey"),
+                "promptId": prompt.get("promptId"),
+                "messageId": prompt.get("messageId"),
+                "callId": prompt.get("callId"),
+                "scope": prompt.get("scope"),
+            }.items()
+            if value is not None
+        }
+        for prompt in pending_prompts[:5]
+    ]
+
+    permission_count = pending_prompt_kind_count(pending_prompts, "permission")
+    question_count = pending_prompt_kind_count(pending_prompts, "question")
+
+    result = {
+        "blockedPromptCount": blocked_prompt_count if blocked_prompt_count >= 0 else len(pending_prompts),
+        "pendingPermissionCount": permission_count,
+        "openQuestionCount": question_count,
+        "blockedPromptKey": snapshot.get("blockedPromptKey"),
+        "blockedPhase": snapshot.get("blockedPhase"),
+        "blockedSummary": snapshot.get("blockedSummary"),
+        "pendingPrompts": prompt_items or None,
+        "promptScope": snapshot.get("promptScope"),
+    }
+    return {key: value for key, value in result.items() if value is not None}
 
 
 
@@ -1508,6 +1760,128 @@ def build_history_detail(
 
 
 
+def render_expand_detail_text(history: dict[str, Any], *, show_ids: bool = False) -> str:
+    message = history.get("message") if isinstance(history.get("message"), dict) else {}
+    selection = history.get("selection") if isinstance(history.get("selection"), dict) else {}
+
+    lines: list[str] = []
+    selected_recent_index = selection.get("recentIndex")
+    if isinstance(selected_recent_index, int):
+        lines.append(f"Expanded timeline item (recentIndex={selected_recent_index})")
+    else:
+        lines.append("Expanded timeline item")
+
+    role = message.get("role")
+    status = message.get("status")
+    if role or status:
+        lines.append(f"Message: role={role or 'unknown'} status={status or 'unknown'}")
+
+    if show_ids and message.get("messageId"):
+        lines.append(f"Message ID: {message.get('messageId')}")
+
+    text_parts = message.get("textParts") if isinstance(message.get("textParts"), list) else []
+    if text_parts:
+        lines.append("")
+        lines.append("Text content:")
+        for idx, text_part in enumerate(text_parts, start=1):
+            summary = text_part.get("summary") or text_part.get("text")
+            if summary:
+                lines.append(f"  {idx}. {summary}")
+
+    tool_calls = message.get("toolCalls") if isinstance(message.get("toolCalls"), list) else []
+    if tool_calls:
+        lines.append("")
+        lines.append("Tool details:")
+        for idx, tool_call in enumerate(tool_calls, start=1):
+            action = tool_call.get("action") or tool_call.get("toolName") or "tool"
+            target_candidates = tool_call.get("targets") or tool_call.get("readTargets") or tool_call.get("writeTargets") or tool_call.get("patchTargets") or []
+            if isinstance(target_candidates, list):
+                target_text = ", ".join(str(item) for item in target_candidates[:3])
+            else:
+                target_text = str(target_candidates)
+            command_preview = tool_call.get("commandPreview")
+            status_text = tool_call.get("toolStatus")
+
+            head = f"  {idx}. {action}"
+            if status_text:
+                head += f" [{status_text}]"
+            if target_text:
+                head += f" target={target_text}"
+            lines.append(head)
+
+            if command_preview:
+                lines.append(f"     command: {command_preview}")
+
+            output_tail = tool_call.get("outputTailLines") if isinstance(tool_call.get("outputTailLines"), list) else []
+            if output_tail:
+                lines.append("     output tail:")
+                for tail_line in output_tail:
+                    lines.append(f"       - {tail_line}")
+
+    if not text_parts and not tool_calls:
+        fallback_preview = message.get("textPreview") or message.get("toolOutputPreview")
+        if fallback_preview:
+            lines.append("")
+            lines.append(f"Preview: {fallback_preview}")
+
+    return "\n".join(lines)
+
+
+
+def render_inspect_text(
+    *,
+    inspection: dict[str, Any],
+    timeline: list[dict[str, Any]],
+    expanded: dict[str, Any] | None,
+    show_ids: bool,
+) -> str:
+    session = inspection.get("opencodeSession") if isinstance(inspection.get("opencodeSession"), dict) else {}
+    lines: list[str] = []
+
+    session_title = session.get("title") or session.get("opencodeSessionId") or "session"
+    lines.append(f"Session: {session_title}")
+    lines.append(f"Status: {inspection.get('currentStatus') or 'unknown'}")
+    if inspection.get("currentPhase"):
+        lines.append(f"Phase: {inspection.get('currentPhase')}")
+
+    current_blocker = inspection.get("currentBlocker") if isinstance(inspection.get("currentBlocker"), dict) else None
+    if current_blocker:
+        blocker_summary = current_blocker.get("blockedSummary") or current_blocker.get("blockedPhase") or "prompt pending"
+        lines.append(f"Blocker: {blocker_summary}")
+
+    latest_preview = inspection.get("latestMeaningfulPreview")
+    if latest_preview:
+        lines.append(f"Progress: {latest_preview}")
+
+    conclusion = inspection.get("finalConclusion")
+    if conclusion:
+        lines.append("")
+        lines.append("Final conclusion:")
+        lines.append(str(conclusion))
+
+    if timeline:
+        lines.append("")
+        lines.append("Timeline:")
+        for item in timeline:
+            index_value = item.get("index")
+            index_text = f"{int(index_value):02d}" if isinstance(index_value, int) else str(index_value or "?")
+            line = item.get("line") or "event"
+            if show_ids and item.get("messageId"):
+                lines.append(f"[#{index_text}] {line} (messageId={item.get('messageId')})")
+            else:
+                lines.append(f"[#{index_text}] {line}")
+
+    if expanded:
+        lines.append("")
+        lines.append(render_expand_detail_text(expanded, show_ids=show_ids))
+    elif timeline:
+        lines.append("")
+        lines.append("Tip: use --expand-index <n> to inspect one timeline item in detail.")
+
+    return "\n".join(lines)
+
+
+
 def build_inspection(
     session_data: dict[str, Any],
     snapshot: dict[str, Any],
@@ -1524,8 +1898,11 @@ def build_inspection(
             completed_work.append(item.get("content"))
 
     current_status = derive_inspection_status(snapshot, latest_message, todo)
+    current_blocker = build_current_blocker(snapshot)
+    current_phase = snapshot.get("blockedPhase") if current_status == "blocked" and snapshot.get("blockedPhase") else todo.get("phase")
     latest_meaningful_preview = (
-        snapshot.get("latestTextPreview")
+        snapshot.get("blockedSummary")
+        or snapshot.get("latestTextPreview")
         or snapshot.get("latestAssistantTextPreview")
         or latest_message.get("errorPreview")
         or latest_message.get("message.errorMessage")
@@ -1541,12 +1918,16 @@ def build_inspection(
             key: value
             for key, value in {
                 "status": current_status,
-                "phase": todo.get("phase"),
+                "phase": current_phase,
                 "latestMeaningfulPreview": latest_meaningful_preview,
                 "hasPendingWork": todo.get("hasPendingWork"),
                 "allTodosCompleted": todo.get("allCompleted"),
-                "pendingPermissionCount": len(snapshot.get("permission") or []) if isinstance(snapshot.get("permission"), list) else None,
-                "openQuestionCount": len(snapshot.get("question") or []) if isinstance(snapshot.get("question"), list) else None,
+                "blockedPromptCount": current_blocker.get("blockedPromptCount") if current_blocker else None,
+                "pendingPermissionCount": current_blocker.get("pendingPermissionCount") if current_blocker else None,
+                "openQuestionCount": current_blocker.get("openQuestionCount") if current_blocker else None,
+                "blockedPromptKey": current_blocker.get("blockedPromptKey") if current_blocker else None,
+                "blockedPhase": current_blocker.get("blockedPhase") if current_blocker else None,
+                "blockedSummary": current_blocker.get("blockedSummary") if current_blocker else None,
                 "runningProgressObservation": running_progress_observation,
                 "transportErrorHints": transport_error_hints,
             }.items()
@@ -1571,9 +1952,10 @@ def build_inspection(
             watcher_entry=watcher_entry,
         ),
         "currentStatus": current_status,
-        "currentPhase": todo.get("phase"),
+        "currentPhase": current_phase,
         "hasPendingWork": todo.get("hasPendingWork"),
         "allTodosCompleted": todo.get("allCompleted"),
+        "currentBlocker": current_blocker,
         "completedWork": completed_work[-5:] or None,
         "latestMeaningfulPreview": latest_meaningful_preview,
         "latestUserInputSummary": snapshot.get("latestUserInputSummary"),
@@ -1804,7 +2186,7 @@ def start_or_attach_watcher(
     watch_timeout_sec: int = DEFAULT_TIMEOUT_SEC,
 ) -> dict[str, Any]:
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(registry, registry_path=registry_path, opencode_session_id=opencode_session_id)
         active_entry = find_active_watcher_entry(registry, opencode_session_id)
         if active_entry:
             raise RuntimeError(
@@ -1881,7 +2263,7 @@ def resolve_continue_watcher_request(
     registry_path: Path,
 ) -> dict[str, Any]:
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(registry, registry_path=registry_path, opencode_session_id=args.opencode_session_id)
         active_entry = find_active_watcher_entry(registry, args.opencode_session_id)
         latest_entry = find_latest_watcher_entry(registry, args.opencode_session_id)
         if active_entry:
@@ -1907,7 +2289,7 @@ def resolve_continue_watcher_request(
         )
 
     openclaw_delivery_target = args.openclaw_delivery_target
-    watch_live = bool(coalesce(args.watch_live, latest_entry.get("watchLive") if latest_entry else False))
+    watch_live = bool(coalesce(args.watch_live, True))
     watch_interval_sec = int(coalesce(args.watch_interval_sec, latest_entry.get("watchIntervalSec") if latest_entry else DEFAULT_WATCH_INTERVAL_SEC))
     idle_timeout_sec = int(coalesce(args.idle_timeout_sec, latest_entry.get("idleTimeoutSec") if latest_entry else DEFAULT_IDLE_TIMEOUT_SEC))
     notify_min_interval_sec = int(
@@ -2118,6 +2500,15 @@ def list_sessions_command(args: argparse.Namespace) -> dict[str, Any]:
 
 def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
+    output_format = str(getattr(args, "output_format", "text") or "text").strip().lower()
+    show_ids = bool(getattr(args, "show_ids", False))
+    timeline_limit = max(1, int(getattr(args, "timeline_limit", DEFAULT_INSPECT_TIMELINE_LIMIT) or DEFAULT_INSPECT_TIMELINE_LIMIT))
+    expand_index = getattr(args, "expand_index", None)
+    expand_message_limit = max(
+        timeline_limit,
+        int(getattr(args, "expand_message_limit", DEFAULT_HISTORY_MESSAGE_LIMIT) or DEFAULT_HISTORY_MESSAGE_LIMIT),
+    )
+
     client = OpenCodeClient(
         base_url=args.opencode_base_url,
         token=resolve_opencode_token(args.opencode_token, getattr(args, "opencode_token_env", None)),
@@ -2131,7 +2522,12 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
     snapshot, _errors = build_compact_snapshot(client, args.opencode_session_id, message_limit=args.watch_message_limit)
 
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            recover_missing_from_disk=bool(getattr(args, "recover_missing_from_disk", False)),
+            opencode_session_id=args.opencode_session_id,
+        )
         watcher_entry = next(
             (
                 entry
@@ -2141,16 +2537,89 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
             None,
         )
 
-    return {
+    inspection = build_inspection(
+        session_data,
+        snapshot,
+        opencode_base_url=args.opencode_base_url,
+        watcher_entry=watcher_entry,
+        requested_message_limit=args.watch_message_limit,
+    )
+
+    timeline = build_inspect_timeline(snapshot, limit=timeline_limit)
+    result: dict[str, Any] = {
         "kind": "opencode_manager_inspect_v1",
-        "inspection": build_inspection(
+        "inspection": inspection,
+        "timeline": timeline,
+        "timelineLimit": timeline_limit,
+    }
+
+    need_messages = bool(expand_index is not None)
+    status_for_conclusion = str(inspection.get("currentStatus") or "").strip().lower()
+    if output_format == "text" and status_for_conclusion in {"completed", "failed", "blocked", "deviated", "stalled"}:
+        need_messages = True
+
+    messages: list[dict[str, Any]] = []
+    if need_messages:
+        messages = normalize_message_collection(
+            client.session_messages(
+                args.opencode_session_id,
+                limit=expand_message_limit,
+                directory=args.opencode_workspace,
+            )
+        )
+
+    if output_format == "text" and messages:
+        final_conclusion = extract_latest_assistant_conclusion(messages)
+        if final_conclusion:
+            inspection["finalConclusion"] = final_conclusion
+
+    expanded_payload = None
+    if expand_index is not None:
+        if not isinstance(expand_index, int):
+            raise ValueError("inspect --expand-index must be an integer")
+        if expand_index <= 0:
+            raise ValueError("inspect --expand-index must be >= 1")
+        if expand_index > len(timeline):
+            raise ValueError(f"inspect --expand-index={expand_index} is outside the available timeline size ({len(timeline)})")
+
+        selected_item = timeline[expand_index - 1]
+        selected_message_id = selected_item.get("messageId")
+        if not selected_message_id:
+            raise ValueError("inspect --expand-index points to an event without messageId; choose another timeline item")
+
+        if not messages:
+            messages = normalize_message_collection(
+                client.session_messages(
+                    args.opencode_session_id,
+                    limit=expand_message_limit,
+                    directory=args.opencode_workspace,
+                )
+            )
+
+        expanded_history = build_history_detail(
             session_data,
-            snapshot,
+            messages,
             opencode_base_url=args.opencode_base_url,
             watcher_entry=watcher_entry,
-            requested_message_limit=args.watch_message_limit,
-        ),
-    }
+            message_limit=expand_message_limit,
+            selected_message_id=selected_message_id,
+            selected_recent_index=None,
+        )
+        expanded_payload = {
+            "timelineItem": selected_item,
+            "history": expanded_history,
+        }
+        result["expanded"] = expanded_payload
+
+    if output_format == "text":
+        result["renderedText"] = render_inspect_text(
+            inspection=inspection,
+            timeline=timeline,
+            expanded=expanded_payload["history"] if expanded_payload else None,
+            show_ids=show_ids,
+        )
+
+    return result
 
 
 
@@ -2175,7 +2644,12 @@ def inspect_history_command(args: argparse.Namespace) -> dict[str, Any]:
     )
 
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            recover_missing_from_disk=bool(getattr(args, "recover_missing_from_disk", False)),
+            opencode_session_id=args.opencode_session_id,
+        )
         watcher_entry = next(
             (
                 entry
@@ -2208,7 +2682,11 @@ def inspect_history_command(args: argparse.Namespace) -> dict[str, Any]:
 def list_watchers_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            recover_missing_from_disk=bool(getattr(args, "recover_missing_from_disk", False)),
+        )
         entries = registry.get("watchers") or []
         if not args.include_exited:
             entries = [entry for entry in entries if entry.get("watcherStatus") == "running"]
@@ -2389,7 +2867,7 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         watcher_payload = resolve_continue_watcher_request(args=args, session_data=session_data, registry_path=registry_path)
     else:
         with locked_registry(registry_path) as (registry, _path):
-            refresh_registry_entries(registry, registry_path=registry_path)
+            refresh_registry_entries(registry, registry_path=registry_path, opencode_session_id=args.opencode_session_id)
             active_entry = find_active_watcher_entry(registry, args.opencode_session_id)
             if active_entry:
                 watcher_payload = {
@@ -2460,7 +2938,12 @@ def stop_session_command(args: argparse.Namespace) -> dict[str, Any]:
     abort_result = client.abort_session(args.opencode_session_id, directory=opencode_workspace)
 
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            recover_missing_from_disk=bool(getattr(args, "recover_missing_from_disk", False)),
+            opencode_session_id=args.opencode_session_id,
+        )
         watcher_entry = next(
             (
                 entry
@@ -2514,7 +2997,12 @@ def stop_session_command(args: argparse.Namespace) -> dict[str, Any]:
 def stop_watcher_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            watcher_id=args.watcher_id,
+            opencode_session_id=args.opencode_session_id,
+        )
         targets = select_running_entries(
             registry,
             watcher_id=args.watcher_id,
@@ -2549,7 +3037,12 @@ def stop_watcher_command(args: argparse.Namespace) -> dict[str, Any]:
 def detach_command(args: argparse.Namespace) -> dict[str, Any]:
     registry_path = Path(args.registry_path).expanduser().resolve()
     with locked_registry(registry_path) as (registry, _path):
-        refresh_registry_entries(registry, registry_path=registry_path)
+        refresh_registry_entries(
+            registry,
+            registry_path=registry_path,
+            watcher_id=args.watcher_id,
+            opencode_session_id=args.opencode_session_id,
+        )
         matching_entries = select_matching_entries(
             registry,
             watcher_id=args.watcher_id,
@@ -2627,7 +3120,14 @@ def add_common_runtime_options(
     else:
         command_parser.add_argument("--openclaw-session-key")
     command_parser.add_argument("--openclaw-delivery-target")
-    command_parser.add_argument("--watch-live", action="store_true")
+    command_parser.add_argument(
+        "--watch-dry-run",
+        dest="watch_live",
+        action="store_const",
+        const=False,
+        default=True,
+        help="debug-only: start the watcher without live OpenClaw delivery (normal usage defaults to live delivery)",
+    )
     command_parser.add_argument("--watch-interval-sec", type=int, default=DEFAULT_WATCH_INTERVAL_SEC)
     command_parser.add_argument("--idle-timeout-sec", type=int, default=DEFAULT_IDLE_TIMEOUT_SEC)
     command_parser.add_argument("--notify-min-interval-sec", type=int, default=0)
@@ -2663,8 +3163,14 @@ def add_continue_watcher_options(command_parser: argparse.ArgumentParser) -> Non
     command_parser.add_argument("--openclaw-session-key")
     command_parser.add_argument("--openclaw-delivery-target")
     add_optional_watcher_mode_options(command_parser)
-    command_parser.add_argument("--watch-live", dest="watch_live", action="store_const", const=True, default=None)
-    command_parser.add_argument("--watch-dry-run", dest="watch_live", action="store_const", const=False)
+    command_parser.add_argument(
+        "--watch-dry-run",
+        dest="watch_live",
+        action="store_const",
+        const=False,
+        default=True,
+        help="debug-only: create or rebind the watcher without live OpenClaw delivery (normal usage defaults to live delivery)",
+    )
     command_parser.add_argument("--watch-interval-sec", type=int)
     command_parser.add_argument("--idle-timeout-sec", type=int)
     command_parser.add_argument("--notify-min-interval-sec", type=int)
@@ -2685,6 +3191,19 @@ def add_watcher_target_options(command_parser: argparse.ArgumentParser) -> None:
     target_group.add_argument("--opencode-session-id")
     command_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
     command_parser.add_argument("--stop-timeout-sec", type=int, default=DEFAULT_STOP_TIMEOUT_SEC)
+
+
+
+def add_recovery_option(command_parser: argparse.ArgumentParser) -> None:
+    command_parser.add_argument(
+        "--recover-missing-from-disk",
+        dest="recover_missing_from_disk",
+        action="store_true",
+        help=(
+            "recovery/debug only: scan watcher directories on disk and import entries missing from the registry "
+            "when local watcher dirs and the registry have diverged; not needed for normal usage"
+        ),
+    )
 
 
 
@@ -2742,8 +3261,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     continue_parser = sub.add_parser(
         "continue",
-        help="send a follow-up prompt to an existing OpenCode session; watcher routing is ensured by default unless --no-watcher is set",
-        description="Send a follow-up prompt (inline or via --follow-up-prompt-file) to an existing OpenCode session. For normal conversation-driven agent usage, watcher routing is ensured by default so later progress keeps routing back to the originating OpenClaw session; use --no-watcher only for explicit no-watcher/debug intent. --ensure-watcher remains accepted as an explicit compatibility alias.",
+        help="send a follow-up prompt to an existing OpenCode session; watcher routing defaults to live delivery unless --no-watcher or --watch-dry-run is set",
+        description="Send a follow-up prompt (inline or via --follow-up-prompt-file) to an existing OpenCode session. For normal conversation-driven agent usage, watcher routing is ensured in live delivery mode by default so later progress keeps routing back to the originating OpenClaw session. Use --no-watcher only for explicit no-watcher/debug intent, or --watch-dry-run for explicit non-live watcher debugging. --ensure-watcher remains accepted as an explicit compatibility alias.",
     )
     continue_parser.add_argument("--opencode-base-url", required=True)
     continue_parser.add_argument("--opencode-token")
@@ -2771,7 +3290,11 @@ def build_parser() -> argparse.ArgumentParser:
     list_sessions_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
     list_sessions_parser.set_defaults(func=list_sessions_command)
 
-    inspect_parser = sub.add_parser("inspect", help="normalize one OpenCode session into current status, completed work, and recent events")
+    inspect_parser = sub.add_parser(
+        "inspect",
+        help="show a compact current-state timeline by default; expand one timeline item only when details are needed",
+        description="Inspect one OpenCode session with a compact timeline-first view by default. Use --expand-index N for one-item detail when needed. JSON remains available via --format json for debug/automation.",
+    )
     inspect_parser.add_argument("--opencode-base-url", required=True)
     inspect_parser.add_argument("--opencode-token")
     inspect_parser.add_argument("--opencode-token-env")
@@ -2779,13 +3302,19 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_parser.add_argument("--opencode-session-id", required=True)
     inspect_parser.add_argument("--watch-message-limit", type=int, default=DEFAULT_MESSAGE_LIMIT)
     inspect_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
+    inspect_parser.add_argument("--timeline-limit", type=int, default=DEFAULT_INSPECT_TIMELINE_LIMIT)
+    inspect_parser.add_argument("--expand-index", type=int, help="expand one timeline item (1-based index from the current inspect output)")
+    inspect_parser.add_argument("--expand-message-limit", type=int, default=DEFAULT_HISTORY_MESSAGE_LIMIT)
+    inspect_parser.add_argument("--show-ids", action="store_true", help="include raw message identifiers in text output (debug use)")
+    inspect_parser.add_argument("--format", dest="output_format", choices=("text", "json"), default="text")
     inspect_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
+    add_recovery_option(inspect_parser)
     inspect_parser.set_defaults(func=inspect_command)
 
     inspect_history_parser = sub.add_parser(
         "inspect-history",
-        help="drill into one recent OpenCode message with detailed text/tool/output context",
-        description="Drill into one recent OpenCode message with detailed text/tool/output context without bloating the default inspect hot path.",
+        help="debug/legacy: drill into one recent OpenCode message with detailed text/tool/output context",
+        description="Debug/legacy deep dive for one recent OpenCode message. Prefer inspect --expand-index for normal agent usage, and use inspect-history only when older/broader lookup is still required.",
     )
     inspect_history_parser.add_argument("--opencode-base-url", required=True)
     inspect_history_parser.add_argument("--opencode-token")
@@ -2799,6 +3328,7 @@ def build_parser() -> argparse.ArgumentParser:
     inspect_history_parser.add_argument("--history-message-limit", type=int, default=DEFAULT_HISTORY_MESSAGE_LIMIT)
     inspect_history_parser.add_argument("--watch-timeout-sec", type=int, default=DEFAULT_TIMEOUT_SEC)
     inspect_history_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
+    add_recovery_option(inspect_history_parser)
     inspect_history_parser.set_defaults(func=inspect_history_command)
 
     stop_session_parser = sub.add_parser(
@@ -2815,11 +3345,13 @@ def build_parser() -> argparse.ArgumentParser:
     stop_session_parser.add_argument("--verify-wait-sec", type=float, default=3.0)
     stop_session_parser.add_argument("--verify-poll-sec", type=float, default=1.0)
     stop_session_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
+    add_recovery_option(stop_session_parser)
     stop_session_parser.set_defaults(func=stop_session_command)
 
     watchers_parser = sub.add_parser("list-watchers", help="show watcher registry entries")
     watchers_parser.add_argument("--registry-path", default=str(DEFAULT_REGISTRY_PATH))
     watchers_parser.add_argument("--include-exited", action="store_true")
+    add_recovery_option(watchers_parser)
     watchers_parser.set_defaults(func=list_watchers_command)
 
     stop_parser = sub.add_parser("stop-watcher", help="stop one running watcher cleanly without deleting the OpenCode session")
@@ -2842,6 +3374,13 @@ def main() -> int:
     except (ValueError, RuntimeError) as exc:
         print(f"opencode-manager error: {exc}", file=sys.stderr)
         return 1
+
+    if args.command == "inspect" and str(getattr(args, "output_format", "text") or "text").strip().lower() == "text":
+        rendered = result.get("renderedText")
+        if isinstance(rendered, str) and rendered.strip():
+            print(rendered)
+            return 0
+
     print(json.dumps(result, ensure_ascii=False, indent=2))
     return 0
 

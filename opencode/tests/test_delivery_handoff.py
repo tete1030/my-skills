@@ -35,7 +35,7 @@ class DeliveryHandoffTests(unittest.TestCase):
             "shouldSend": True,
             "delivery": {
                 "originSession": "origin-session-example",
-                "originTarget": "telegram:example-target:topic:example-thread",
+                "originTarget": "discord:example-origin-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -111,7 +111,7 @@ class DeliveryHandoffTests(unittest.TestCase):
             },
             "routing": {
                 "originSession": "origin-session-example",
-                "originTarget": "telegram:example-target:topic:example-thread",
+                "originTarget": "discord:example-origin-thread",
                 "mustPreserveOrigin": True,
             },
         }
@@ -136,7 +136,7 @@ class DeliveryHandoffTests(unittest.TestCase):
             "shouldSend": True,
             "delivery": {
                 "originSession": None,
-                "originTarget": "telegram:conflicting-target:topic:other-thread",
+                "originTarget": "discord:example-conflicting-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -164,8 +164,8 @@ class DeliveryHandoffTests(unittest.TestCase):
             },
             "shouldSend": True,
             "delivery": {
-                "originSession": "agent:main:telegram:group:example-target:topic:example-thread",
-                "originTarget": "telegram:conflicting-target:topic:other-thread",
+                "originSession": "agent:main:discord:target:example-origin-thread",
+                "originTarget": "discord:example-conflicting-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -181,7 +181,7 @@ class DeliveryHandoffTests(unittest.TestCase):
         self.assertEqual(result["openclawDelivery"]["routeStatus"], "conflict")
         self.assertEqual(result["openclawDelivery"]["reason"], "origin_route_conflict")
         self.assertIsNone(result["openclawDelivery"]["systemEventTemplate"])
-        self.assertEqual(result["routing"]["originTarget"], "telegram:conflicting-target:topic:other-thread")
+        self.assertEqual(result["routing"]["originTarget"], "discord:example-conflicting-thread")
 
     def test_silent_turn_stays_skip_and_never_builds_templates(self):
         turn_result = {
@@ -195,7 +195,7 @@ class DeliveryHandoffTests(unittest.TestCase):
             "shouldSend": False,
             "delivery": {
                 "originSession": "origin-session-example",
-                "originTarget": "telegram:example-target:topic:example-thread",
+                "originTarget": "discord:example-origin-thread",
             },
             "cadence": {
                 "decision": "silent_noop",

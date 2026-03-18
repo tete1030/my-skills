@@ -32,10 +32,10 @@ class WatchRunnerTests(unittest.TestCase):
             "deliveryAction": "inject",
             "routeStatus": "ready",
             "reason": "resolved_from_origin_session",
-            "sessionKey": "agent:main:telegram:group:-100123:topic:42",
+            "sessionKey": "agent:main:discord:target:example-origin-thread",
             "gatewayMethod": "agent",
             "gatewayParams": {
-                "sessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "sessionKey": "agent:main:discord:target:example-origin-thread",
                 "message": "Runtime task update for the current conversation.",
                 "deliver": True,
                 "idempotencyKey": "opencode-origin-handoff-abc123",
@@ -164,8 +164,8 @@ class WatchRunnerTests(unittest.TestCase):
             },
             "shouldSend": True,
             "delivery": {
-                "originSession": "agent:main:telegram:group:-100123:topic:42",
-                "originTarget": "telegram:-100123:topic:42",
+                "originSession": "agent:main:discord:target:example-origin-thread",
+                "originTarget": "discord:example-origin-thread",
             },
             "cadence": {
                 "decision": "visible_update",
@@ -359,6 +359,78 @@ class WatchRunnerTests(unittest.TestCase):
             self.assertEqual(reloaded["watchRunner"]["lastRunningProgressObservation"]["status"], "running_without_visible_progress")
             self.assertEqual(reloaded["watchRunner"]["lastTransportErrorHints"][0]["retryAfter"], "30")
             self.assertEqual(reloaded["status"], "running")
+
+    def test_terminal_state_ignores_task_cluster_timestamp_only_changes_for_activity(self):
+        agent_call = self.ready_agent_call()
+        first_cluster = self.task_cluster(preview="Validated the final output.")
+        second_cluster = self.task_cluster(preview="Validated the final output.")
+        second_cluster["sourceUpdateMs"] = first_cluster["sourceUpdateMs"] + 999
+
+        turn = {
+            "factSkeleton": {
+                "status": "completed",
+                "phase": "done",
+                "latestMeaningfulPreview": "Validated the final output.",
+                "reason": "status=completed",
+            },
+            "cadence": {
+                "decision": "visible_update",
+                "noChange": True,
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T10:45:00+00:00",
+            },
+            "taskCluster": first_cluster,
+        }
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            state_path = Path(tmpdir) / "watch-state.json"
+            state_path.write_text(json.dumps({"status": "completed"}) + "\n")
+
+            with mock.patch("opencode_watch_runner.now_iso") as now_iso:
+                now_iso.side_effect = [
+                    "2026-03-08T10:00:00+00:00",
+                    "2026-03-08T10:01:00+00:00",
+                ]
+                first_state = update_watch_state(
+                    state_path,
+                    session_id="ses_123",
+                    watch_action={
+                        "mode": "dry-run",
+                        "operation": "plan",
+                        "shouldExecute": False,
+                        "duplicateSuppressed": False,
+                        "supersededSuppressed": False,
+                        "actionKey": "opencode-origin-handoff-abc123",
+                        "reason": "ready_inject_dry_run",
+                    },
+                    agent_call=agent_call,
+                    turn=turn,
+                    task_cluster=first_cluster,
+                    idle_timeout_sec=45,
+                )
+
+                second_state = update_watch_state(
+                    state_path,
+                    session_id="ses_123",
+                    watch_action={
+                        "mode": "dry-run",
+                        "operation": "plan",
+                        "shouldExecute": False,
+                        "duplicateSuppressed": False,
+                        "supersededSuppressed": False,
+                        "actionKey": "opencode-origin-handoff-abc123",
+                        "reason": "ready_inject_dry_run",
+                    },
+                    agent_call=agent_call,
+                    turn={**turn, "taskCluster": second_cluster},
+                    task_cluster=second_cluster,
+                    idle_timeout_sec=45,
+                )
+
+            self.assertEqual(first_state["lastActivityAt"], "2026-03-08T10:00:00+00:00")
+            self.assertEqual(first_state["idleEligibleSince"], "2026-03-08T10:00:00+00:00")
+            self.assertEqual(second_state["lastActivityAt"], "2026-03-08T10:00:00+00:00")
+            self.assertEqual(second_state["idleEligibleSince"], "2026-03-08T10:00:00+00:00")
 
     def test_terminal_state_can_trigger_idle_timeout_exit(self):
         watch_state = {

@@ -51,13 +51,23 @@ def short(text, n=200):
 def latest_meaningful_preview(payload):
     snapshot = payload.get("snapshot") or {}
     latest = snapshot.get("latestMessage") or {}
+    observation = payload.get("observation") or {}
+    after = payload.get("after") or {}
+    effective_status = str(observation.get("status") or after.get("status") or latest.get("status") or "").strip().lower()
+
+    if effective_status == "blocked":
+        blocked_preview = snapshot.get("blockedSummary") or snapshot.get("blockedPhase")
+        if blocked_preview:
+            return short(blocked_preview)
+
     latest_status = str(latest.get("status") or "").strip().lower()
     if latest_status in {"completed", "failed", "blocked"}:
         terminal_preview = latest_assistant_message_text_preview(snapshot)
         if terminal_preview:
             return terminal_preview
     preview = (
-        snapshot.get("accumulatedEventSummary")
+        snapshot.get("blockedSummary")
+        or snapshot.get("accumulatedEventSummary")
         or snapshot.get("latestAssistantTextPreview")
         or snapshot.get("latestTextPreview")
         or latest.get("message.lastTextPreview")
@@ -95,8 +105,15 @@ def task_cluster_preview(payload):
     observation = payload.get("observation") or {}
     after = payload.get("after") or {}
     status = str(observation.get("status") or after.get("status") or "").strip().lower()
+    if status == "blocked":
+        return short(snapshot.get("blockedSummary") or snapshot.get("blockedPhase")) or latest_meaningful_preview(payload)
     if status in TERMINAL_TASK_CLUSTER_STATUSES:
-        return latest_assistant_message_text_preview(snapshot)
+        terminal_preview = latest_assistant_message_text_preview(snapshot)
+        if terminal_preview:
+            return terminal_preview
+        if status in {"failed", "deviated", "stalled"}:
+            return latest_meaningful_preview(payload)
+        return None
     return latest_meaningful_preview(payload)
 
 

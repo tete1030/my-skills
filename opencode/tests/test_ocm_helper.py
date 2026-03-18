@@ -20,8 +20,8 @@ class OcmHelperTests(unittest.TestCase):
                     [
                         "OPENCODE_BASE_URL='http://127.0.0.1:4096'",
                         "OPENCODE_WORKSPACE='/tmp/demo-workspace'",
-                        "OPENCLAW_SESSION_KEY='agent:main:telegram:group:-100123:topic:4029'",
-                        "OPENCLAW_DELIVERY_TARGET='telegram:-100123:topic:4029'",
+                        "OPENCLAW_SESSION_KEY='agent:main:discord:target:example-opencode-thread'",
+                        "OPENCLAW_DELIVERY_TARGET='discord:example-opencode-thread'",
                     ]
                 )
                 + "\n",

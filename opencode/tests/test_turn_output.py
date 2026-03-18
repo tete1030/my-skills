@@ -174,6 +174,42 @@ class TurnOutputTests(unittest.TestCase):
         final_text = build_turn_result(final_payload)
         self.assertEqual(final_text["taskCluster"]["detailRank"], len("Done and verified."))
 
+    def test_blocked_turn_prefers_structured_blocked_summary(self):
+        payload = {
+            "decision": {"decision": "visible_update", "reason": "status=blocked"},
+            "observation": {"status": "blocked", "phase": "Permission pending", "noChange": False, "lastUpdatedMs": 123456789},
+            "after": {
+                "status": "blocked",
+                "phase": "Permission pending",
+                "consecutiveNoChangeCount": 0,
+                "lastVisibleUpdateAt": "2026-03-08T09:40:00+00:00",
+            },
+            "snapshot": {
+                "latestUserInputSummary": "Please continue the patch.",
+                "latestMessage": {
+                    "id": "msg_user",
+                    "role": "user",
+                    "status": "running",
+                },
+                "blockedSummary": "Permission: Allow write to scripts/opencode_snapshot.py",
+                "blockedPhase": "Permission pending",
+                "pendingPrompts": [
+                    {
+                        "kind": "permission",
+                        "promptKey": "permission:id:perm_1",
+                        "messageId": "msg_user",
+                        "callId": "call_abc",
+                    }
+                ],
+            },
+        }
+
+        result = build_turn_result(payload)
+
+        self.assertEqual(result["factSkeleton"]["status"], "blocked")
+        self.assertIn("Permission: Allow write", result["factSkeleton"]["latestMeaningfulPreview"])
+        self.assertGreater(result["taskCluster"]["detailRank"], 0)
+
     def test_turn_payload_is_debug_only(self):
         payload = {
             "decision": {"decision": "visible_update", "reason": "state_changed"},

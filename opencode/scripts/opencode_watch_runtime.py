@@ -20,6 +20,7 @@ DEFAULT_MESSAGE_LIMIT = 10
 DEFAULT_NO_CHANGE_VISIBLE_AFTER_MIN = 30
 DEFAULT_INTERVAL_SEC = 60
 DEFAULT_IDLE_TIMEOUT_SEC = 0
+DEFAULT_LOG_ROTATE_BYTES = 16 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -213,9 +214,49 @@ def redact_command(command: list[str]) -> list[str]:
     return redacted
 
 
-def emit_line(text: str, log_file) -> None:
-    sys.stdout.write(text)
-    sys.stdout.flush()
+def should_mirror_stdout(log_path: Path) -> bool:
+    try:
+        stdout_fileno = sys.stdout.fileno()
+    except (AttributeError, OSError, ValueError):
+        return True
+
+    try:
+        stdout_stat = os.fstat(stdout_fileno)
+        log_stat = log_path.stat()
+    except OSError:
+        return True
+
+    return not (stdout_stat.st_dev == log_stat.st_dev and stdout_stat.st_ino == log_stat.st_ino)
+
+
+def rotate_log_if_needed(log_path: Path, *, max_bytes: int = DEFAULT_LOG_ROTATE_BYTES) -> bool:
+    if max_bytes <= 0:
+        return False
+
+    try:
+        size = log_path.stat().st_size
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return False
+
+    if size < max_bytes:
+        return False
+
+    backup_path = log_path.with_name(f"{log_path.name}.1")
+    try:
+        if backup_path.exists():
+            backup_path.unlink()
+        os.replace(log_path, backup_path)
+        return True
+    except OSError:
+        return False
+
+
+def emit_line(text: str, log_file, *, mirror_stdout: bool) -> None:
+    if mirror_stdout:
+        sys.stdout.write(text)
+        sys.stdout.flush()
     log_file.write(text)
     log_file.flush()
 
@@ -223,6 +264,9 @@ def emit_line(text: str, log_file) -> None:
 def run_runtime(command: list[str], paths: RuntimePaths, *, once: bool) -> int:
     paths.state.parent.mkdir(parents=True, exist_ok=True)
     paths.log.parent.mkdir(parents=True, exist_ok=True)
+
+    mirror_stdout = should_mirror_stdout(paths.log)
+    rotate_log_if_needed(paths.log, max_bytes=DEFAULT_LOG_ROTATE_BYTES)
 
     with paths.log.open("a", encoding="utf-8") as log_file:
         banner = {
@@ -234,7 +278,7 @@ def run_runtime(command: list[str], paths: RuntimePaths, *, once: bool) -> int:
             "log": str(paths.log),
             "command": redact_command(command),
         }
-        emit_line(json.dumps(banner, ensure_ascii=False) + "\n", log_file)
+        emit_line(json.dumps(banner, ensure_ascii=False) + "\n", log_file, mirror_stdout=mirror_stdout)
 
         proc = subprocess.Popen(
             command,
@@ -245,7 +289,7 @@ def run_runtime(command: list[str], paths: RuntimePaths, *, once: bool) -> int:
         try:
             assert proc.stdout is not None
             for line in proc.stdout:
-                emit_line(line, log_file)
+                emit_line(line, log_file, mirror_stdout=mirror_stdout)
             return proc.wait()
         except KeyboardInterrupt:
             proc.send_signal(signal.SIGINT)

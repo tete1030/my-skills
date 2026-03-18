@@ -97,6 +97,17 @@ def non_empty(value) -> bool:
 
 
 
+def blocked_prompt_count(snapshot) -> int:
+    count = snapshot.get("blockedPromptCount")
+    if isinstance(count, int):
+        return max(count, 0)
+    pending_prompts = snapshot.get("pendingPrompts")
+    if isinstance(pending_prompts, list):
+        return len(pending_prompts)
+    return -1
+
+
+
 def derive_status(snapshot, previous_status="idle"):
     latest = snapshot.get("latestMessage") or {}
     permission = snapshot.get("permission")
@@ -104,7 +115,10 @@ def derive_status(snapshot, previous_status="idle"):
     errors = snapshot.get("errors") or {}
     todo = snapshot.get("todo")
 
-    if non_empty(permission) or non_empty(question):
+    prompt_count = blocked_prompt_count(snapshot)
+    if prompt_count > 0:
+        return "blocked"
+    if prompt_count < 0 and (non_empty(permission) or non_empty(question)):
         return "blocked"
 
     raw_status = str(latest.get("status") or "").lower()
@@ -152,8 +166,14 @@ def snapshot_to_observation(snapshot, state):
     latest_id = latest.get("id") or state.get("lastSeenMessageId")
     todo = snapshot.get("todo")
     todo_digest = stable_digest(todo) if todo is not None else state.get("lastTodoDigest")
-    phase = derive_phase(todo, fallback=state.get("phase"))
     status = derive_status(snapshot, previous_status=state.get("status"))
+    blocked_phase = snapshot.get("blockedPhase")
+    phase = blocked_phase if status == "blocked" and blocked_phase else derive_phase(todo, fallback=state.get("phase"))
+    blocked_prompt_key = snapshot.get("blockedPromptKey")
+    blocked_prompt_count_value = blocked_prompt_count(snapshot)
+    if blocked_prompt_count_value < 0:
+        blocked_prompt_count_value = None
+    blocked_summary = snapshot.get("blockedSummary")
     last_updated_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     progress_observation = analyze_running_progress(snapshot, current_status=status, now_ms=last_updated_ms)
     transport_error_hints = summarize_transport_errors(snapshot.get("errors"))
@@ -166,6 +186,12 @@ def snapshot_to_observation(snapshot, state):
         changed = True
     if status != state.get("status"):
         changed = True
+    if blocked_prompt_key != state.get("lastBlockedPromptKey"):
+        changed = True
+    if blocked_prompt_count_value != state.get("blockedPromptCount"):
+        changed = True
+    if blocked_summary != state.get("blockedSummary"):
+        changed = True
 
     observation = {
         "status": status,
@@ -173,6 +199,9 @@ def snapshot_to_observation(snapshot, state):
         "lastSeenMessageId": latest_id,
         "lastCompletedMessageId": latest_id if status == "completed" else state.get("lastCompletedMessageId"),
         "lastTodoDigest": todo_digest,
+        "lastBlockedPromptKey": blocked_prompt_key,
+        "blockedPromptCount": blocked_prompt_count_value,
+        "blockedSummary": blocked_summary,
         "lastUpdatedMs": last_updated_ms,
         "noChange": not changed,
         "visibleUpdate": False,

@@ -23,8 +23,8 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
                     [
                         "OPENCODE_BASE_URL='http://127.0.0.1:4096'",
                         "OPENCODE_WORKSPACE='/mnt/vault/test-opencode-skill'",
-                        "OPENCLAW_SESSION_KEY='agent:main:telegram:group:-100:topic:42'",
-                        "OPENCLAW_DELIVERY_TARGET='telegram:-100:topic:42'",
+                        "OPENCLAW_SESSION_KEY='agent:main:discord:target:example-origin-thread'",
+                        "OPENCLAW_DELIVERY_TARGET='discord:example-origin-thread'",
                         "OPENCODE_WATCH_INTERVAL_SEC='7'",
                         "OPENCODE_IDLE_TIMEOUT_SEC='55'",
                         "OPENCODE_WATCH_MESSAGE_LIMIT='11'",
@@ -43,8 +43,8 @@ class OpenCodeValidateLiveTests(unittest.TestCase):
             self.assertEqual(config["sourcePath"], str(defaults_env.resolve()))
             self.assertEqual(config["baseUrl"], "http://127.0.0.1:4096")
             self.assertEqual(config["workspace"], "/mnt/vault/test-opencode-skill")
-            self.assertEqual(config["openclawSessionKey"], "agent:main:telegram:group:-100:topic:42")
-            self.assertEqual(config["openclawDeliveryTarget"], "telegram:-100:topic:42")
+            self.assertEqual(config["openclawSessionKey"], "agent:main:discord:target:example-origin-thread")
+            self.assertEqual(config["openclawDeliveryTarget"], "discord:example-origin-thread")
             self.assertEqual(config["watchIntervalSec"], 7)
             self.assertEqual(config["idleTimeoutSec"], 55)
             self.assertEqual(config["watchMessageLimit"], 11)

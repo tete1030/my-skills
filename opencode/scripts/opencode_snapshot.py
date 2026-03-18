@@ -20,6 +20,30 @@ EVENT_SELECTION_MAX = 4
 EVENT_SUMMARY_LIMIT = 260
 EVENT_ITEM_LIMIT = 90
 
+PROMPT_ID_KEYS = (
+    "id",
+    "promptID",
+    "promptId",
+    "permissionID",
+    "permissionId",
+    "questionID",
+    "questionId",
+)
+PROMPT_MESSAGE_ID_KEYS = ("messageID", "messageId", "message_id")
+PROMPT_CALL_ID_KEYS = ("callID", "callId", "call_id", "toolCallID", "toolCallId")
+PROMPT_SUMMARY_KEYS = (
+    "summary",
+    "title",
+    "label",
+    "name",
+    "prompt",
+    "question",
+    "reason",
+    "text",
+    "body",
+    "description",
+)
+
 ANSI_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
 HEXISH_RE = re.compile(r"^[0-9a-f]{7,}$", re.IGNORECASE)
 
@@ -347,6 +371,243 @@ def normalize_todo(todo: Any) -> Any:
         "hasPendingWork": bool(counts["active"] or counts["pending"]),
         "allCompleted": bool(items) and counts["completed"] == len(items),
         "isEmpty": not items,
+    }
+
+
+
+def normalize_prompt_collection(value: Any) -> List[Any]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return value
+    if isinstance(value, dict):
+        for key in ("items", "prompts", "data", "entries", "pending"):
+            candidate = value.get(key)
+            if isinstance(candidate, list):
+                return candidate
+        return [value]
+    return [value]
+
+
+
+def flatten_scalar_hints(value: Any, *, max_depth: int = 4, key_predicate=None, _depth: int = 0) -> List[str]:
+    if _depth > max_depth:
+        return []
+    hints: List[str] = []
+    if isinstance(value, dict):
+        for key, child in value.items():
+            key_text = str(key)
+            if key_predicate is None or key_predicate(key_text):
+                hints.extend(flatten_scalar_hints(child, max_depth=max_depth, key_predicate=None, _depth=_depth + 1))
+            elif isinstance(child, (dict, list, tuple)):
+                hints.extend(flatten_scalar_hints(child, max_depth=max_depth, key_predicate=key_predicate, _depth=_depth + 1))
+    elif isinstance(value, (list, tuple)):
+        for child in value:
+            hints.extend(flatten_scalar_hints(child, max_depth=max_depth, key_predicate=key_predicate, _depth=_depth + 1))
+    elif isinstance(value, (str, int, float)):
+        text = str(value).strip()
+        if text:
+            hints.append(text)
+    return hints
+
+
+
+def unique_list(values: Iterable[Any], *, limit: int = 8) -> List[str]:
+    seen = set()
+    out: List[str] = []
+    for value in values:
+        if value is None:
+            continue
+        text = str(value).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+        if len(out) >= limit:
+            break
+    return out
+
+
+
+def first_scalar_by_keys(payload: Any, keys: Iterable[str]) -> Optional[str]:
+    if not isinstance(payload, dict):
+        return None
+    for key in keys:
+        value = payload.get(key)
+        if isinstance(value, (str, int, float)):
+            text = str(value).strip()
+            if text:
+                return text
+    return None
+
+
+
+def prompt_scope_for_session(session_refs: List[str], *, session_id: str) -> str:
+    if not session_refs:
+        return "unscoped"
+    return "session_match" if session_id in session_refs else "session_mismatch"
+
+
+
+def build_prompt_key(kind: str, prompt_id: Optional[str], session_refs: List[str], message_id: Optional[str], call_id: Optional[str], payload: Any) -> str:
+    if prompt_id:
+        return f"{kind}:id:{prompt_id}"
+
+    tuple_parts = [
+        kind,
+        ",".join(sorted(session_refs)) if session_refs else None,
+        message_id,
+        call_id,
+    ]
+    if any(tuple_parts[1:]):
+        tuple_text = "|".join(part for part in tuple_parts if part)
+        digest = hashlib.sha256(tuple_text.encode("utf-8")).hexdigest()[:16]
+        return f"{kind}:tuple:{digest}"
+
+    payload_digest = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
+    return f"{kind}:digest:{payload_digest}"
+
+
+
+def normalize_prompt_entry(kind: str, payload: Any, *, session_id: str) -> Dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {"raw": payload}
+    prompt_id = first_scalar_by_keys(source, PROMPT_ID_KEYS)
+    message_id = first_scalar_by_keys(source, PROMPT_MESSAGE_ID_KEYS)
+    call_id = first_scalar_by_keys(source, PROMPT_CALL_ID_KEYS)
+
+    session_refs = unique_list(
+        flatten_scalar_hints(
+            source,
+            key_predicate=lambda key: "session" in key.lower() or key.lower() in {"sid", "sessionid"},
+        ),
+        limit=10,
+    )
+    tree_refs = unique_list(
+        flatten_scalar_hints(
+            source,
+            key_predicate=lambda key: any(token in key.lower() for token in ("tree", "node", "branch", "parent")),
+        ),
+        limit=10,
+    )
+
+    summary = truncate_text(first_scalar_by_keys(source, PROMPT_SUMMARY_KEYS), limit=160)
+    if not summary:
+        summary = truncate_text(source.get("raw") if isinstance(source.get("raw"), (str, int, float)) else None, limit=160)
+    if not summary and (message_id or call_id):
+        summary = truncate_text(" / ".join(part for part in [message_id, call_id] if part), limit=160)
+
+    scope = prompt_scope_for_session(session_refs, session_id=session_id)
+    prompt_key = build_prompt_key(kind, prompt_id, session_refs, message_id, call_id, source)
+
+    normalized: Dict[str, Any] = {
+        "kind": kind,
+        "promptKey": prompt_key,
+        "scope": scope,
+        "summary": summary,
+        "promptId": prompt_id,
+        "messageId": message_id,
+        "callId": call_id,
+        "sessionRefs": session_refs or None,
+        "treeRefs": tree_refs or None,
+    }
+    return {key: value for key, value in normalized.items() if value is not None}
+
+
+
+def summarize_blocked_prompts(prompts: List[Dict[str, Any]]) -> Tuple[Optional[str], Optional[str]]:
+    if not prompts:
+        return None, None
+
+    permission_count = sum(1 for prompt in prompts if prompt.get("kind") == "permission")
+    question_count = sum(1 for prompt in prompts if prompt.get("kind") == "question")
+    head = prompts[0]
+    head_summary = truncate_text(head.get("summary"), limit=120)
+
+    if len(prompts) == 1:
+        label = "Permission" if head.get("kind") == "permission" else "Question"
+        phase = f"{label} pending"
+        summary = f"{label}: {head_summary}" if head_summary else f"{label} pending"
+        return phase, truncate_text(summary, limit=220)
+
+    if permission_count and question_count:
+        phase = f"{len(prompts)} prompts pending"
+    elif permission_count:
+        phase = f"{permission_count} permissions pending"
+    else:
+        phase = f"{question_count} questions pending"
+
+    details = []
+    if permission_count:
+        details.append(f"{permission_count} permission")
+    if question_count:
+        details.append(f"{question_count} question")
+    detail_text = ", ".join(details)
+    summary = f"Blocked by {len(prompts)} prompts ({detail_text})"
+    if head_summary:
+        summary = f"{summary}: {head_summary}"
+    return truncate_text(phase, limit=140), truncate_text(summary, limit=220)
+
+
+
+def normalize_pending_prompts(
+    *,
+    session_id: str,
+    permission_payload: Any,
+    question_payload: Any,
+) -> Dict[str, Any]:
+    permission_items = normalize_prompt_collection(permission_payload)
+    question_items = normalize_prompt_collection(question_payload)
+
+    all_prompts: List[Dict[str, Any]] = []
+    all_prompts.extend(normalize_prompt_entry("permission", item, session_id=session_id) for item in permission_items)
+    all_prompts.extend(normalize_prompt_entry("question", item, session_id=session_id) for item in question_items)
+
+    matched = [prompt for prompt in all_prompts if prompt.get("scope") == "session_match"]
+    unscoped = [prompt for prompt in all_prompts if prompt.get("scope") == "unscoped"]
+    mismatched = [prompt for prompt in all_prompts if prompt.get("scope") == "session_mismatch"]
+
+    scope_mode = "none"
+    pending_prompts: List[Dict[str, Any]] = []
+    if matched:
+        scope_mode = "session_match"
+        pending_prompts = matched
+    elif unscoped and not mismatched:
+        scope_mode = "fallback_unscoped"
+        pending_prompts = [
+            {
+                **prompt,
+                "scope": "unscoped_fallback",
+            }
+            for prompt in unscoped
+        ]
+
+    prompt_keys = sorted(str(prompt.get("promptKey")) for prompt in pending_prompts if prompt.get("promptKey"))
+    blocked_prompt_key = None
+    if len(prompt_keys) == 1:
+        blocked_prompt_key = prompt_keys[0]
+    elif prompt_keys:
+        digest = hashlib.sha256("|".join(prompt_keys).encode("utf-8")).hexdigest()[:16]
+        blocked_prompt_key = f"multi:{digest}"
+
+    blocked_phase, blocked_summary = summarize_blocked_prompts(pending_prompts)
+
+    return {
+        "pendingPrompts": pending_prompts,
+        "blockedPromptCount": len(pending_prompts),
+        "blockedPromptKey": blocked_prompt_key,
+        "blockedPhase": blocked_phase,
+        "blockedSummary": blocked_summary,
+        "promptScope": {
+            "mode": scope_mode,
+            "total": len(all_prompts),
+            "matched": len(matched),
+            "unscoped": len(unscoped),
+            "mismatched": len(mismatched),
+            "permissionRawCount": len(permission_items),
+            "questionRawCount": len(question_items),
+        },
     }
 
 
@@ -862,6 +1123,11 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
     question = attempt("question", client.question)
 
     message_summary = summarize_recent_messages(messages)
+    prompt_state = normalize_pending_prompts(
+        session_id=session_id,
+        permission_payload=permission,
+        question_payload=question,
+    )
 
     snapshot = {
         "sessionId": session_id,
@@ -883,6 +1149,12 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
         "status": status,
         "permission": permission,
         "question": question,
+        "pendingPrompts": prompt_state.get("pendingPrompts"),
+        "blockedPromptCount": prompt_state.get("blockedPromptCount"),
+        "blockedPromptKey": prompt_state.get("blockedPromptKey"),
+        "blockedPhase": prompt_state.get("blockedPhase"),
+        "blockedSummary": prompt_state.get("blockedSummary"),
+        "promptScope": prompt_state.get("promptScope"),
         "errors": errors,
     }
     return snapshot, errors

@@ -18,8 +18,8 @@
 
 ## 已验证
 
-- 目前验证仅在 dedicated test directory/session（`/mnt/vault/test-opencode-skill` + topic `4029`）完成。
-- live injection 到 topic `4029` 已打通。
+- 目前验证仅在 dedicated test directory/session（`/mnt/vault/test-opencode-skill` + dedicated example thread）完成。
+- live injection 到 dedicated example thread 已打通。
 - 仅 cadence / no-change 变化时，dedupe / idempotency 稳定，不会重复可见投递。
 - 出现新的真实事实变化时，会生成新的 update / action key，并触发新的投递。
 - `accumulatedEventSummary` 产生的事实现在能穿过 turn 边界并到达 main agent（当前主要经 `latestMeaningfulPreview`）。

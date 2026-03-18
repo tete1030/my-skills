@@ -1,7 +1,9 @@
+import io
 import os
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from argparse import Namespace
 from pathlib import Path
 
@@ -9,10 +11,13 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_watch_runtime import (  # noqa: E402
+    DEFAULT_LOG_ROTATE_BYTES,
     DEFAULT_RUNTIME_NAME,
     RuntimePaths,
     build_watch_command,
     default_runtime_paths,
+    rotate_log_if_needed,
+    run_runtime,
     runtime_paths_for_args,
 )
 
@@ -51,8 +56,8 @@ class WatchRuntimeTests(unittest.TestCase):
         config = {
             "base_url": "http://127.0.0.1:4096",
             "session_id": "ses_demo",
-            "origin_session": "agent:main:telegram:group:-100123:topic:42",
-            "origin_target": "telegram:-100123:topic:42",
+            "origin_session": "agent:main:discord:target:example-origin-thread",
+            "origin_target": "discord:example-origin-thread",
             "token_env": "WATCH_RUNTIME_TOKEN",
         }
 
@@ -100,8 +105,8 @@ class WatchRuntimeTests(unittest.TestCase):
         config = {
             "opencodeBaseUrl": "http://127.0.0.1:4096",
             "opencodeSessionId": "ses_demo",
-            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+            "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+            "openclawDeliveryTarget": "discord:example-origin-thread",
             "watchIntervalSec": 15,
             "idleTimeoutSec": 900,
             "notifyMinIntervalSec": 300,
@@ -124,7 +129,7 @@ class WatchRuntimeTests(unittest.TestCase):
         self.assertIn("--notify-filter-critical", command)
         self.assertEqual(command.count("--notify-keyword"), 2)
         self.assertIn("--origin-session", command)
-        self.assertIn("agent:main:telegram:group:-100123:topic:42", command)
+        self.assertIn("agent:main:discord:target:example-origin-thread", command)
 
     def test_runtime_paths_resolve_manager_named_state_and_log(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -145,6 +150,63 @@ class WatchRuntimeTests(unittest.TestCase):
 
             self.assertEqual(paths.state, (config_path.parent / "manager-state.json").resolve())
             self.assertEqual(paths.log, (config_path.parent / "manager-watch.log").resolve())
+
+    def test_rotate_log_if_needed_keeps_single_backup(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "watch.log"
+            backup_path = Path(tmpdir) / "watch.log.1"
+            log_path.write_text("current log that is too large", encoding="utf-8")
+            backup_path.write_text("older backup", encoding="utf-8")
+
+            rotated = rotate_log_if_needed(log_path, max_bytes=8)
+
+            self.assertTrue(rotated)
+            self.assertFalse(log_path.exists())
+            self.assertEqual(backup_path.read_text(encoding="utf-8"), "current log that is too large")
+
+    def test_run_runtime_rotates_large_log_and_writes_fresh_banner_to_current_log(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            paths = RuntimePaths(
+                config=Path(tmpdir) / "config.json",
+                state=Path(tmpdir) / "state.json",
+                log=Path(tmpdir) / "watch.log",
+            )
+            paths.config.write_text("{}\n", encoding="utf-8")
+            paths.log.write_text("x" * 32, encoding="utf-8")
+
+            class FakeProcess:
+                def __init__(self):
+                    self.stdout = iter(["runtime line\n"])
+
+                def wait(self):
+                    return 0
+
+                def send_signal(self, _sig):
+                    return None
+
+            fake_stdout = io.StringIO()
+            with mock.patch("opencode_watch_runtime.DEFAULT_LOG_ROTATE_BYTES", 16), mock.patch(
+                "opencode_watch_runtime.subprocess.Popen", return_value=FakeProcess()
+            ), mock.patch("opencode_watch_runtime.should_mirror_stdout", return_value=False), mock.patch(
+                "opencode_watch_runtime.sys.stdout", fake_stdout
+            ):
+                exit_code = run_runtime([sys.executable, "fake-watch"], paths, once=False)
+
+            self.assertEqual(exit_code, 0)
+            rotated_path = Path(tmpdir) / "watch.log.1"
+            self.assertTrue(rotated_path.exists())
+            self.assertEqual(rotated_path.read_text(encoding="utf-8"), "x" * 32)
+
+            current_lines = paths.log.read_text(encoding="utf-8").splitlines()
+            self.assertGreaterEqual(len(current_lines), 2)
+            banner = current_lines[0]
+            self.assertIn('"kind": "opencode_watch_runtime_start_v1"', banner)
+            self.assertIn('"mode": "loop"', banner)
+            self.assertEqual(current_lines[1], "runtime line")
+            self.assertEqual(fake_stdout.getvalue(), "")
+
+    def test_rotate_default_size_is_small_retention_guard_not_unbounded_debug_log(self):
+        self.assertEqual(DEFAULT_LOG_ROTATE_BYTES, 16 * 1024 * 1024)
 
 
 if __name__ == "__main__":

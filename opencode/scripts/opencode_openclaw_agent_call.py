@@ -58,25 +58,16 @@ def build_agent_message(system_event_text: str, *, handoff: dict | None = None) 
     reply_policy = agent_input.get("replyPolicy") or {}
 
     session_hint = runtime_signal.get("opencodeSessionId") or "the referenced OpenCode session"
-    preamble = ["Internal runtime signal for the current conversation."]
+    preamble = ["Runtime signal for the current conversation."]
     if runtime_signal.get("action") == "inspect_once_current_state":
-        preamble.append(
-            f"Inspect {session_hint} once, then base any visible reply on that inspected current state rather than this event text."
-        )
-        preamble.append("Prefer rehydration.currentState and rehydration.sinceLatestUserInput from that inspect.")
-        preamble.append("If inspect alone still leaves a real gap, proactively run one targeted inspect-history drill-down (usually --recent-index 0/1/2, or --message-id when the inspection already points to one).")
-        preamble.append("Use that drill-down for both relevant older history and 'what happened between inspect points?' questions, especially recent shell/tool output or stdout tail lines.")
-        preamble.append("Do not fetch broad history by default; only do the narrow lookup needed to answer.")
+        preamble.append(f"Inspect {session_hint} once and answer from inspected current state, not from this event body.")
+        preamble.append("Use rehydration.currentState plus rehydration.sinceLatestUserInput.")
+        preamble.append("If detail is missing, expand one timeline item via inspect --expand-index N; use inspect-history only for older/broader fallback.")
         preamble.append("Do not start or attach a watcher, and do not keep polling from this session.")
     if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
-        preamble.append("Reply visibly only if the inspected current state adds net-new user-visible progress for this task cluster.")
-        preamble.append("A newer user input inside the OpenCode session does not reset same-cluster reply allowances in this chat.")
-        preamble.append("Small exception: when rehydration.sinceLatestUserInput.assistantMessageCount == 0 and the inspected state is still running with meaningful progress, you may send one short visible progress reply for this task cluster.")
-        preamble.append("Across one same-cluster chain, prefer at most one visible running/progress reply and at most one visible terminal completion/failure reply.")
-        preamble.append("Do not suppress the first same-cluster terminal completion/failure reply just because an earlier progress reply was already sent.")
-        preamble.append("If this chat already received a visible same-cluster terminal/status reply, later same-cluster terminal/status updates are NO_REPLY unless the earlier reply was clearly wrong.")
-        preamble.append("After that first visible same-cluster progress reply, later non-terminal equal, older, weaker, duplicate, or superseded inspected states are NO_REPLY.")
-        preamble.append("When suppressing, output the single token NO_REPLY and nothing else—no explanation, prefix, suffix, bullets, or code fences.")
+        preamble.append("Send a visible reply only when inspected state adds net-new user-visible progress for this task cluster.")
+        preamble.append("Across this chat's same-cluster chain (even if newer OpenCode user input appears), allow at most one running progress reply and one first terminal reply; later equal/weaker/duplicate/superseded states are NO_REPLY.")
+        preamble.append("When suppressing, output exactly NO_REPLY.")
 
     return "\n".join([
         *preamble,

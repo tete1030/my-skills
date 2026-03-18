@@ -7,7 +7,13 @@ SCRIPT_DIR = Path(__file__).resolve().parents[1] / "scripts"
 sys.path.insert(0, str(SCRIPT_DIR))
 
 from opencode_remote_cycle import derive_phase, derive_status, snapshot_to_observation  # noqa: E402
-from opencode_snapshot import analyze_running_progress, compact_latest_message, normalize_todo, summarize_recent_messages  # noqa: E402
+from opencode_snapshot import (  # noqa: E402
+    analyze_running_progress,
+    compact_latest_message,
+    normalize_pending_prompts,
+    normalize_todo,
+    summarize_recent_messages,
+)
 
 
 TOOL_ONLY_COMPLETED_MESSAGE = {
@@ -297,6 +303,69 @@ class SnapshotNormalizationTests(unittest.TestCase):
 
         self.assertIn("已改成结构化事件汇总", summary["accumulatedEventSummary"])
         self.assertIn("text:", summary["accumulatedEventSummary"])
+
+    def test_normalize_pending_prompts_prefers_session_matched_entries(self):
+        prompt_state = normalize_pending_prompts(
+            session_id="ses_target",
+            permission_payload=[
+                {
+                    "id": "perm_other",
+                    "sessionID": "ses_other",
+                    "messageID": "msg_other",
+                    "summary": "Allow tool call for other session",
+                },
+                {
+                    "id": "perm_target",
+                    "sessionID": "ses_target",
+                    "callID": "call_123",
+                    "summary": "Allow file write",
+                },
+            ],
+            question_payload=[
+                {
+                    "id": "q_other",
+                    "sessionID": "ses_other",
+                    "question": "continue?",
+                }
+            ],
+        )
+
+        self.assertEqual(prompt_state["blockedPromptCount"], 1)
+        self.assertEqual(prompt_state["blockedPromptKey"], "permission:id:perm_target")
+        self.assertEqual(prompt_state["blockedPhase"], "Permission pending")
+        self.assertIn("Allow file write", prompt_state["blockedSummary"])
+        self.assertEqual(prompt_state["pendingPrompts"][0]["scope"], "session_match")
+        self.assertEqual(prompt_state["promptScope"]["mode"], "session_match")
+        self.assertEqual(prompt_state["promptScope"]["mismatched"], 2)
+
+    def test_normalize_pending_prompts_can_fallback_to_unscoped_single_session_view(self):
+        prompt_state = normalize_pending_prompts(
+            session_id="ses_target",
+            permission_payload=[
+                {
+                    "id": "perm_unscoped",
+                    "summary": "Allow command execution",
+                }
+            ],
+            question_payload=[],
+        )
+
+        self.assertEqual(prompt_state["blockedPromptCount"], 1)
+        self.assertEqual(prompt_state["pendingPrompts"][0]["scope"], "unscoped_fallback")
+        self.assertEqual(prompt_state["promptScope"]["mode"], "fallback_unscoped")
+
+    def test_derive_status_ignores_raw_prompt_payload_when_normalized_scope_is_empty(self):
+        snapshot = {
+            "latestMessage": compact_latest_message(USER_TEXT_MESSAGE),
+            "todo": normalize_todo([]),
+            "permission": [{"id": "perm_other", "sessionID": "ses_other"}],
+            "question": [],
+            "pendingPrompts": [],
+            "blockedPromptCount": 0,
+            "errors": {},
+        }
+
+        self.assertEqual(derive_status(snapshot, previous_status="idle"), "running")
 
     def test_derive_status_and_observation_use_normalized_fields(self):
         completed_snapshot = {

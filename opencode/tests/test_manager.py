@@ -23,7 +23,11 @@ from opencode_manager import (  # noqa: E402
     inspect_history_command,
     list_watchers_command,
     parse_model_override,
+    read_watch_log_banner,
+    resolve_prompt_input,
+    normalize_inline_prompt_text,
     refresh_registry_entry,
+    refresh_registry_entries,
     save_json_object,
     start_command,
     start_or_attach_watcher,
@@ -55,8 +59,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "opencodeBaseUrl": "http://127.0.0.1:4096",
                 "opencodeSessionId": opencode_session_id,
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
                 "watchStatePath": str(state_path),
                 "watchLogPath": str(log_path),
                 "watchTimeoutSec": 20,
@@ -75,8 +79,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                     "watchProcessId": 12345,
                     "opencodeSessionId": opencode_session_id,
                     "opencodeWorkspace": "/tmp/demo-workspace",
-                    "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                    "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                    "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                    "openclawDeliveryTarget": "discord:example-origin-thread",
                     "watcherStatePath": str(state_path),
                     "watcherConfigPath": str(config_path),
                     "watcherLogPath": str(log_path),
@@ -91,8 +95,8 @@ class OpenCodeManagerTests(unittest.TestCase):
             opencode_base_url="http://127.0.0.1:4096",
             opencode_session_id="ses_demo",
             opencode_workspace="/tmp/demo-workspace",
-            openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-            openclaw_delivery_target="telegram:-100123:topic:42",
+            openclaw_session_key="agent:main:discord:target:example-origin-thread",
+            openclaw_delivery_target="discord:example-origin-thread",
             opencode_token=None,
             opencode_token_env="OPENCODE_TOKEN",
             watch_live=False,
@@ -113,7 +117,7 @@ class OpenCodeManagerTests(unittest.TestCase):
 
         manager_config = build_manager_watcher_config(entry)
         self.assertEqual(manager_config["opencodeSessionId"], "ses_demo")
-        self.assertEqual(manager_config["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
+        self.assertEqual(manager_config["openclawSessionKey"], "agent:main:discord:target:example-origin-thread")
         self.assertEqual(manager_config["notifyMinIntervalSec"], 300)
         self.assertEqual(manager_config["notifyMinPriority"], "normal")
         self.assertEqual(manager_config["notifyKeywords"], ["deploy", "release"])
@@ -179,8 +183,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchProcessId": 999999,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
                 "watcherStatePath": str(state_path),
                 "watcherConfigPath": str(Path(tmpdir) / "config.json"),
                 "watcherLogPath": str(Path(tmpdir) / "watch.log"),
@@ -192,7 +196,7 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(refreshed["watcherStatus"], "exited")
             self.assertEqual(refreshed["watchExitReason"], "idle_timeout:terminal_status:completed")
             self.assertEqual(refreshed["lastOpencodeStatus"], "completed")
-            self.assertEqual(refreshed["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
+            self.assertEqual(refreshed["openclawSessionKey"], "agent:main:discord:target:example-origin-thread")
 
     def test_refresh_registry_entry_marks_stale_process_reference_when_pid_alive_but_runtime_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -202,8 +206,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchProcessId": 12345,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
                 "watcherStatePath": str(Path(tmpdir) / "state.json"),
                 "watcherConfigPath": str(Path(tmpdir) / "config.json"),
                 "watcherLogPath": str(Path(tmpdir) / "watch.log"),
@@ -217,6 +221,69 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(refreshed["watcherStatus"], "exited")
             self.assertEqual(refreshed["watchExitReason"], "stale_process_reference")
 
+    def test_read_watch_log_banner_reads_prefix_only(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "watch.log"
+            banner_line = '{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:00:00+00:00"}\n'
+            trailing_bytes = 400_000
+            log_path.write_bytes(banner_line.encode("utf-8") + (b"x" * trailing_bytes))
+
+            original_open = Path.open
+            bytes_read = 0
+
+            def counting_open(path_self: Path, *args, **kwargs):
+                handle = original_open(path_self, *args, **kwargs)
+                if path_self != log_path:
+                    return handle
+
+                class CountingHandle:
+                    def __init__(self, wrapped):
+                        self._wrapped = wrapped
+
+                    def read(self, size=-1):
+                        nonlocal bytes_read
+                        data = self._wrapped.read(size)
+                        bytes_read += len(data)
+                        return data
+
+                    def __enter__(self):
+                        self._wrapped.__enter__()
+                        return self
+
+                    def __exit__(self, exc_type, exc, tb):
+                        return self._wrapped.__exit__(exc_type, exc, tb)
+
+                    def __getattr__(self, name):
+                        return getattr(self._wrapped, name)
+
+                return CountingHandle(handle)
+
+            with mock.patch("pathlib.Path.open", new=counting_open):
+                banner = read_watch_log_banner(log_path)
+
+            self.assertEqual(banner.get("startedAt"), "2026-03-09T10:00:00+00:00")
+            self.assertLess(bytes_read, log_path.stat().st_size)
+
+    def test_read_watch_log_banner_prefers_latest_banner_in_prefix(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            log_path = Path(tmpdir) / "watch.log"
+            log_path.write_text(
+                "\n".join(
+                    [
+                        '{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:00:00+00:00"}',
+                        "not-json",
+                        '{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:05:00+00:00"}',
+                        "runtime output after startup",
+                    ]
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            banner = read_watch_log_banner(log_path)
+
+            self.assertEqual(banner.get("startedAt"), "2026-03-09T10:05:00+00:00")
+
     def test_start_or_attach_watcher_refuses_duplicate_active_lock(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
@@ -228,8 +295,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                         opencode_base_url="http://127.0.0.1:4096",
                         opencode_session_id="ses_demo",
                         opencode_workspace="/tmp/demo-workspace",
-                        openclaw_session_key="agent:main:telegram:group:-100123:topic:99",
-                        openclaw_delivery_target="telegram:-100123:topic:99",
+                        openclaw_session_key="agent:main:discord:target:example-route-99",
+                        openclaw_delivery_target="discord:example-route-99",
                         opencode_token=None,
                         opencode_token_env=None,
                         watch_live=False,
@@ -252,10 +319,10 @@ class OpenCodeManagerTests(unittest.TestCase):
 
             self.assertEqual(result["watcherCount"], 1)
             watcher = result["watchers"][0]
-            self.assertEqual(watcher["openclawSessionKey"], "agent:main:telegram:group:-100123:topic:42")
+            self.assertEqual(watcher["openclawSessionKey"], "agent:main:discord:target:example-origin-thread")
             self.assertEqual(watcher["opencodeSessionId"], "ses_demo")
 
-    def test_list_watchers_recovers_missing_registry_entry_from_watcher_dir(self):
+    def test_list_watchers_default_does_not_recover_missing_registry_entry_from_watcher_dir(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
             watcher_dir = Path(tmpdir) / "watchers" / "ow_recovered"
@@ -269,8 +336,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                     "opencodeBaseUrl": "http://127.0.0.1:4096",
                     "opencodeSessionId": "ses_recovered",
                     "opencodeWorkspace": "/tmp/demo-workspace",
-                    "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                    "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                    "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                    "openclawDeliveryTarget": "discord:example-origin-thread",
                     "watchStatePath": str(state_path),
                     "watchLogPath": str(log_path),
                     "watchTimeoutSec": 20,
@@ -283,7 +350,43 @@ class OpenCodeManagerTests(unittest.TestCase):
             save_json_object(state_path, {"watchRunner": {"lastRunAt": "2026-03-09T10:00:00+00:00"}})
             log_path.write_text('{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:00:00+00:00"}\n')
 
-            args = Namespace(registry_path=str(registry_path), include_exited=False)
+            args = Namespace(registry_path=str(registry_path), include_exited=False, recover_missing_from_disk=False)
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path, pid=54321)):
+                result = list_watchers_command(args)
+
+            self.assertEqual(result["watcherCount"], 0)
+            registry = __import__("opencode_manager").load_json_object(registry_path)
+            self.assertEqual(registry["watchers"], [])
+
+    def test_list_watchers_can_recover_missing_registry_entry_from_watcher_dir_when_requested(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            watcher_dir = Path(tmpdir) / "watchers" / "ow_recovered"
+            config_path = watcher_dir / "config.json"
+            state_path = watcher_dir / "state.json"
+            log_path = watcher_dir / "watch.log"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            save_json_object(
+                config_path,
+                {
+                    "opencodeBaseUrl": "http://127.0.0.1:4096",
+                    "opencodeSessionId": "ses_recovered",
+                    "opencodeWorkspace": "/tmp/demo-workspace",
+                    "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                    "openclawDeliveryTarget": "discord:example-origin-thread",
+                    "watchStatePath": str(state_path),
+                    "watchLogPath": str(log_path),
+                    "watchTimeoutSec": 20,
+                    "watchMessageLimit": 10,
+                    "watchIntervalSec": 60,
+                    "watchLive": False,
+                    "idleTimeoutSec": 900,
+                },
+            )
+            save_json_object(state_path, {"watchRunner": {"lastRunAt": "2026-03-09T10:00:00+00:00"}})
+            log_path.write_text('{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T10:00:00+00:00"}\n')
+
+            args = Namespace(registry_path=str(registry_path), include_exited=False, recover_missing_from_disk=True)
             with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path, pid=54321)):
                 result = list_watchers_command(args)
 
@@ -292,6 +395,96 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(watcher["watcherId"], "ow_recovered")
             self.assertEqual(watcher["opencodeSessionId"], "ses_recovered")
             self.assertEqual(watcher["watchProcessId"], 54321)
+
+    def test_refresh_registry_entries_refreshes_existing_registry_entry_without_disk_recovery(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, state_path = self._write_registry_running_entry(tmpdir, watcher_id="ow_existing")
+            watcher_dir = Path(tmpdir) / "watchers" / "ow_untracked"
+            untracked_config_path = watcher_dir / "config.json"
+            untracked_state_path = watcher_dir / "state.json"
+            untracked_log_path = watcher_dir / "watch.log"
+            save_json_object(
+                untracked_config_path,
+                {
+                    "opencodeBaseUrl": "http://127.0.0.1:4096",
+                    "opencodeSessionId": "ses_untracked",
+                    "opencodeWorkspace": "/tmp/demo-workspace",
+                    "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                    "openclawDeliveryTarget": "discord:example-origin-thread",
+                    "watchStatePath": str(untracked_state_path),
+                    "watchLogPath": str(untracked_log_path),
+                    "watchTimeoutSec": 20,
+                    "watchMessageLimit": 10,
+                    "watchIntervalSec": 60,
+                    "watchLive": False,
+                    "idleTimeoutSec": 900,
+                },
+            )
+            save_json_object(state_path, {"watchRunner": {"lastRunAt": "2026-03-09T11:00:00+00:00", "lastOperation": "deliver"}})
+            save_json_object(untracked_state_path, {"watchRunner": {"lastRunAt": "2026-03-09T12:00:00+00:00"}})
+            untracked_log_path.write_text('{"kind":"opencode_watch_runtime_start_v1","startedAt":"2026-03-09T12:00:00+00:00"}\n')
+
+            registry = __import__("opencode_manager").load_json_object(registry_path)
+            runtime_map = self._runtime_map(config_path, pid=12345)
+            runtime_map[str(untracked_config_path.resolve())] = {
+                "pid": 54321,
+                "configPath": str(untracked_config_path.resolve()),
+                "command": f"python {SCRIPT_DIR / 'opencode_watch_runtime.py'} --config {untracked_config_path.resolve()}",
+            }
+
+            with mock.patch("opencode_manager.list_watch_runtime_processes", return_value=runtime_map):
+                refreshed = refresh_registry_entries(registry, registry_path=registry_path)
+
+            self.assertEqual(len(refreshed["watchers"]), 1)
+            self.assertEqual(refreshed["watchers"][0]["watcherId"], "ow_existing")
+            self.assertEqual(refreshed["watchers"][0]["watcherStatus"], "running")
+            self.assertEqual(refreshed["watchers"][0]["lastWatchRunAt"], "2026-03-09T11:00:00+00:00")
+
+    def test_start_command_defaults_to_live_watcher(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start",
+                first_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                notify_min_interval_sec=0,
+                notify_min_priority="low",
+                notify_keyword=[],
+                notify_filter_critical=False,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ) as start_watcher:
+                result = start_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], True)
+            self.assertEqual(result["handoffMode"], "watcher_live")
 
     def test_start_command_returns_live_watcher_handoff_contract(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -305,8 +498,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 opencode_workspace="/tmp/demo-workspace",
                 title="Demo task",
                 first_prompt="please start",
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-                openclaw_delivery_target="telegram:-100123:topic:42",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
                 watch_live=True,
                 watch_interval_sec=15,
                 idle_timeout_sec=45,
@@ -321,8 +514,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
@@ -353,8 +546,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 title="Demo task",
                 first_prompt="please start",
                 first_prompt_file=None,
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-                openclaw_delivery_target="telegram:-100123:topic:42",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
                 watch_live=True,
                 watch_interval_sec=15,
                 idle_timeout_sec=45,
@@ -368,8 +561,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:4029",
-                "openclawDeliveryTarget": "telegram:-100123:topic:4029",
+                "openclawSessionKey": "agent:main:discord:target:example-opencode-thread",
+                "openclawDeliveryTarget": "discord:example-opencode-thread",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
@@ -395,8 +588,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 title="Demo task",
                 first_prompt=None,
                 first_prompt_file=str(prompt_path),
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-                openclaw_delivery_target="telegram:-100123:topic:42",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
                 watch_live=True,
                 watch_interval_sec=15,
                 idle_timeout_sec=45,
@@ -411,8 +604,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
@@ -432,6 +625,52 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertEqual(result["firstPrompt"]["inputMethod"], "file")
             self.assertEqual(result["firstPrompt"]["promptFile"], str(prompt_path.resolve()))
             self.assertIn("line 1 with `backticks`", result["firstPrompt"]["promptPreview"])
+
+    def test_start_command_explicit_watch_dry_run_overrides_default_live(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                title="Demo task",
+                first_prompt="please start in dry-run mode",
+                first_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=False,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                notify_min_interval_sec=0,
+                notify_min_priority="low",
+                notify_keyword=[],
+                notify_filter_critical=False,
+                watch_message_limit=8,
+            )
+            fake_client = mock.Mock()
+            fake_client.create_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": False,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ) as start_watcher:
+                result = start_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], False)
+            self.assertEqual(result["handoffMode"], "watcher_not_live")
 
     def test_start_command_allows_explicit_no_watcher_opt_out(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -488,8 +727,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 opencode_agent="build",
                 opencode_model="openai/gpt-5",
                 opencode_variant="high",
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-                openclaw_delivery_target="telegram:-100123:topic:42",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
                 watch_live=True,
                 watch_interval_sec=15,
                 idle_timeout_sec=45,
@@ -504,8 +743,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
@@ -758,11 +997,11 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "running_without_visible_progress",
             )
             self.assertIn(
-                "Inspect still shows running without enough visible progress; inspect-history can confirm the latest assistant/tool step.",
+                "If inspect still shows running without enough visible progress, expand one timeline item first; use inspect-history only if the gap remains.",
                 inspection["rehydration"]["followUpHints"]["useInspectHistoryWhen"],
             )
             self.assertIn(
-                "Transport/API errors may have hidden events; inspect-history can verify the latest durable message/output.",
+                "If transport/API errors may have hidden events, expand one timeline item first; use inspect-history only to verify older durable output.",
                 inspection["rehydration"]["followUpHints"]["useInspectHistoryWhen"],
             )
             self.assertEqual(
@@ -836,6 +1075,232 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertTrue(inspection["latestMessage"]["message.aborted"])
             self.assertEqual(inspection["rehydration"]["currentState"]["status"], "failed")
             self.assertIn("aborted", inspection["rehydration"]["currentState"]["latestMeaningfulPreview"].lower())
+
+    def test_inspect_command_surfaces_structured_blocker_details(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {
+                    "id": "msg_user_latest",
+                    "role": "user",
+                    "created": 1773227812213,
+                    "status": "running",
+                },
+                "latestTextPreview": "Please continue this task.",
+                "latestUserInputSummary": "Please continue this task.",
+                "latestUserInputMessageId": "msg_user_latest",
+                "accumulatedEventSummary": "user: Please continue this task.",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_user_latest", "summary": "Please continue this task.", "created": 1773227812213},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 1,
+                    "oldestMessageId": "msg_user_latest",
+                    "oldestMessageRole": "user",
+                    "oldestMessageCreated": 1773227812213,
+                    "newestMessageId": "msg_user_latest",
+                    "newestMessageRole": "user",
+                    "newestMessageCreated": 1773227812213,
+                },
+                "messageWindowSize": 1,
+                "messageWindowLimit": 4,
+                "todo": {"items": [], "hasPendingWork": False, "allCompleted": False},
+                "permission": [{"id": "perm_1"}],
+                "question": [],
+                "pendingPrompts": [
+                    {
+                        "kind": "permission",
+                        "promptKey": "permission:id:perm_1",
+                        "promptId": "perm_1",
+                        "scope": "session_match",
+                        "summary": "Allow write to scripts/opencode_snapshot.py",
+                        "messageId": "msg_user_latest",
+                        "callId": "call_patch_1",
+                    }
+                ],
+                "blockedPromptCount": 1,
+                "blockedPromptKey": "permission:id:perm_1",
+                "blockedPhase": "Permission pending",
+                "blockedSummary": "Permission: Allow write to scripts/opencode_snapshot.py",
+                "promptScope": {
+                    "mode": "session_match",
+                    "total": 1,
+                    "matched": 1,
+                    "unscoped": 0,
+                    "mismatched": 0,
+                    "permissionRawCount": 1,
+                    "questionRawCount": 0,
+                },
+                "errors": {},
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = inspect_command(args)
+
+            inspection = result["inspection"]
+            self.assertEqual(inspection["currentStatus"], "blocked")
+            self.assertEqual(inspection["currentPhase"], "Permission pending")
+            self.assertIn("Permission: Allow write", inspection["latestMeaningfulPreview"])
+            self.assertEqual(inspection["currentBlocker"]["blockedPromptKey"], "permission:id:perm_1")
+            self.assertEqual(inspection["currentBlocker"]["pendingPrompts"][0]["messageId"], "msg_user_latest")
+            self.assertEqual(inspection["currentBlocker"]["pendingPrompts"][0]["callId"], "call_patch_1")
+            self.assertEqual(inspection["rehydration"]["currentState"]["blockedPromptCount"], 1)
+            self.assertEqual(inspection["rehydration"]["currentState"]["pendingPermissionCount"], 1)
+            self.assertEqual(inspection["rehydration"]["currentState"]["openQuestionCount"], 0)
+
+    def test_inspect_command_default_text_output_is_timeline_first(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+                output_format="text",
+                timeline_limit=4,
+                expand_index=None,
+                expand_message_limit=10,
+                show_ids=False,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {"id": "msg_a", "role": "assistant", "status": "running", "created": 1773227812220},
+                "latestTextPreview": "Still running",
+                "latestUserInputSummary": "Please continue",
+                "latestUserInputMessageId": "msg_u",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_u", "summary": "Please continue", "created": 1773227812200},
+                    {"kind": "tool", "messageId": "msg_a", "toolName": "edit", "summary": "patched file", "toolStatus": "completed", "created": 1773227812210},
+                    {"kind": "text", "messageId": "msg_a", "role": "assistant", "summary": "Applied patch and running tests", "created": 1773227812220},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 2,
+                    "oldestMessageId": "msg_u",
+                    "newestMessageId": "msg_a",
+                },
+                "messageWindowSize": 2,
+                "messageWindowLimit": 4,
+                "todo": {"items": [], "hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+                "errors": {},
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = inspect_command(args)
+
+            rendered = result["renderedText"]
+            self.assertIn("Session: Demo task", rendered)
+            self.assertIn("Timeline:", rendered)
+            self.assertIn("[#01]", rendered)
+            self.assertIn("tool[edit]", rendered)
+            self.assertIn("Tip: use --expand-index <n>", rendered)
+            self.assertNotIn("messageId=", rendered)
+
+    def test_inspect_command_expand_index_returns_single_item_detail(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path, config_path, _state_path = self._write_registry_running_entry(tmpdir)
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace="/tmp/demo-workspace",
+                opencode_session_id="ses_demo",
+                watch_message_limit=4,
+                output_format="text",
+                timeline_limit=4,
+                expand_index=2,
+                expand_message_limit=10,
+                show_ids=False,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            snapshot = {
+                "latestMessage": {"id": "msg_a", "role": "assistant", "status": "running", "created": 1773227812220},
+                "latestTextPreview": "Still running",
+                "latestUserInputSummary": "Please continue",
+                "latestUserInputMessageId": "msg_u",
+                "eventLedger": [
+                    {"kind": "user_input", "messageId": "msg_u", "summary": "Please continue", "created": 1773227812200},
+                    {"kind": "tool", "messageId": "msg_a", "toolName": "bash", "summary": "tests passed", "toolStatus": "completed", "created": 1773227812210},
+                ],
+                "messageWindow": {
+                    "observedMessageCount": 2,
+                    "oldestMessageId": "msg_u",
+                    "newestMessageId": "msg_a",
+                },
+                "messageWindowSize": 2,
+                "messageWindowLimit": 4,
+                "todo": {"items": [], "hasPendingWork": False, "allCompleted": False},
+                "permission": [],
+                "question": [],
+                "errors": {},
+            }
+            fake_client.session_messages.return_value = [
+                {
+                    "info": {"id": "msg_u", "role": "user", "time": {"created": 1773227812200}},
+                    "parts": [{"type": "text", "text": "Please continue"}],
+                },
+                {
+                    "info": {"id": "msg_a", "role": "assistant", "time": {"created": 1773227812210}},
+                    "parts": [
+                        {
+                            "type": "tool",
+                            "tool": "bash",
+                            "state": {
+                                "status": "completed",
+                                "input": {"command": "python3 -m unittest"},
+                                "output": "ok\nall tests passed",
+                            },
+                        },
+                        {"type": "text", "text": "Done. Tests are green."},
+                    ],
+                },
+            ]
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value=self._runtime_map(config_path)
+            ), mock.patch("opencode_manager.build_compact_snapshot", return_value=(snapshot, {})):
+                result = inspect_command(args)
+
+            self.assertEqual(result["expanded"]["timelineItem"]["index"], 2)
+            self.assertIn("Expanded timeline item", result["renderedText"])
+            self.assertIn("Tool details:", result["renderedText"])
 
     def test_inspect_history_command_surfaces_patch_targets_and_new_text(self):
         args = Namespace(
@@ -979,6 +1444,51 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(tool_call["outputTailLines"][-1], "All done")
         self.assertIn("notes.py::test_edit PASSED", tool_call["outputTailLines"])
 
+    def test_attach_command_defaults_to_live_watcher(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            args = Namespace(
+                registry_path=str(registry_path),
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                watch_timeout_sec=20,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=True,
+                watch_interval_sec=15,
+                idle_timeout_sec=45,
+                notify_min_interval_sec=0,
+                notify_min_priority="low",
+                notify_keyword=[],
+                notify_filter_critical=False,
+                watch_message_limit=3,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {
+                "id": "ses_demo",
+                "directory": "/tmp/demo-workspace",
+                "title": "Demo task",
+            }
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.start_or_attach_watcher", return_value=fake_watcher
+            ) as start_watcher, mock.patch("opencode_manager.build_compact_snapshot", return_value=({}, {})):
+                attach_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], True)
+
     def test_attach_command_returns_immediate_inspection_for_takeover(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -990,8 +1500,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 watch_timeout_sec=20,
                 opencode_workspace=None,
                 opencode_session_id="ses_demo",
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:42",
-                openclaw_delivery_target="telegram:-100123:topic:42",
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
                 watch_live=True,
                 watch_interval_sec=15,
                 idle_timeout_sec=45,
@@ -1010,8 +1520,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchProcessAlive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
                 "lastWatchRunAt": "2026-03-10T05:00:00+00:00",
                 "lastWatchOperation": "plan",
             }
@@ -1073,6 +1583,179 @@ class OpenCodeManagerTests(unittest.TestCase):
             self.assertIsNone(inspection["rehydration"]["sinceLatestUserInput"].get("latestAssistantText"))
             self.assertEqual(inspection["rehydration"]["watcherState"]["watcherId"], "ow_new")
 
+    def test_continue_command_defaults_to_live_watcher_for_new_binding(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                follow_up_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=True,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                notify_min_interval_sec=None,
+                notify_min_priority=None,
+                notify_keyword=None,
+                notify_filter_critical=None,
+                registry_path=str(registry_path),
+                opencode_agent=None,
+                opencode_model=None,
+                opencode_variant=None,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher) as start_watcher:
+                result = continue_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], True)
+            self.assertEqual(result["handoffMode"], "watcher_live")
+
+    def test_continue_command_defaults_to_live_even_if_latest_watcher_was_dry_run(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(
+                registry_path,
+                {
+                    "kind": "opencode_manager_registry_v1",
+                    "watchers": [
+                        {
+                            "watcherId": "ow_old",
+                            "watcherStatus": "exited",
+                            "opencodeSessionId": "ses_demo",
+                            "opencodeWorkspace": "/tmp/demo-workspace",
+                            "openclawSessionKey": "agent:main:discord:target:old-origin-thread",
+                            "openclawDeliveryTarget": "discord:old-origin-thread",
+                            "watchLive": False,
+                            "watchIntervalSec": 15,
+                            "idleTimeoutSec": 45,
+                            "watchMessageLimit": 8,
+                            "watchTimeoutSec": 25,
+                            "watcherConfigPath": str(Path(tmpdir) / "watchers" / "ow_old" / "config.json"),
+                            "watcherStatePath": str(Path(tmpdir) / "watchers" / "ow_old" / "state.json"),
+                            "watcherLogPath": str(Path(tmpdir) / "watchers" / "ow_old" / "watch.log"),
+                        }
+                    ],
+                },
+            )
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                follow_up_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=None,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                notify_min_interval_sec=None,
+                notify_min_priority=None,
+                notify_keyword=None,
+                notify_filter_critical=None,
+                registry_path=str(registry_path),
+                opencode_agent=None,
+                opencode_model=None,
+                opencode_variant=None,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": True,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher) as start_watcher:
+                result = continue_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], True)
+            self.assertEqual(result["handoffMode"], "watcher_live")
+
+    def test_continue_command_explicit_watch_dry_run_overrides_default_live(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            registry_path = Path(tmpdir) / "registry.json"
+            save_json_object(registry_path, {"kind": "opencode_manager_registry_v1", "watchers": []})
+            args = Namespace(
+                opencode_base_url="http://127.0.0.1:4096",
+                opencode_token=None,
+                opencode_token_env=None,
+                opencode_workspace=None,
+                opencode_session_id="ses_demo",
+                follow_up_prompt="please continue",
+                follow_up_prompt_file=None,
+                ensure_watcher=True,
+                openclaw_session_key="agent:main:discord:target:example-origin-thread",
+                openclaw_delivery_target="discord:example-origin-thread",
+                watch_live=False,
+                watch_interval_sec=None,
+                idle_timeout_sec=None,
+                watch_message_limit=None,
+                watch_timeout_sec=None,
+                notify_min_interval_sec=None,
+                notify_min_priority=None,
+                notify_keyword=None,
+                notify_filter_critical=None,
+                registry_path=str(registry_path),
+                opencode_agent=None,
+                opencode_model=None,
+                opencode_variant=None,
+            )
+            fake_client = mock.Mock()
+            fake_client.get_session.return_value = {"id": "ses_demo", "directory": "/tmp/demo-workspace"}
+            fake_client.prompt_session.return_value = None
+            fake_watcher = {
+                "watcherId": "ow_new",
+                "watcherStatus": "running",
+                "watchLive": False,
+                "opencodeSessionId": "ses_demo",
+                "opencodeWorkspace": "/tmp/demo-workspace",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                "openclawDeliveryTarget": "discord:example-origin-thread",
+            }
+
+            with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
+                "opencode_manager.list_watch_runtime_processes", return_value={}
+            ), mock.patch("opencode_manager.start_or_attach_watcher", return_value=fake_watcher) as start_watcher:
+                result = continue_command(args)
+
+            self.assertEqual(start_watcher.call_args.kwargs["watch_live"], False)
+            self.assertEqual(result["handoffMode"], "watcher_not_live")
+
     def test_continue_command_requires_explicit_current_openclaw_binding(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             registry_path = Path(tmpdir) / "registry.json"
@@ -1086,8 +1769,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                             "watcherStatus": "exited",
                             "opencodeSessionId": "ses_demo",
                             "opencodeWorkspace": "/tmp/demo-workspace",
-                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                            "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                            "openclawDeliveryTarget": "discord:example-origin-thread",
                             "watchLive": True,
                             "watchIntervalSec": 15,
                             "idleTimeoutSec": 45,
@@ -1139,8 +1822,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 follow_up_prompt="please continue",
                 follow_up_prompt_file=None,
                 ensure_watcher=True,
-                openclaw_session_key="agent:main:telegram:group:-100123:topic:10",
-                openclaw_delivery_target="telegram:-100123:topic:10",
+                openclaw_session_key="agent:main:discord:target:example-route-10",
+                openclaw_delivery_target="discord:example-route-10",
                 watch_live=None,
                 watch_interval_sec=None,
                 idle_timeout_sec=None,
@@ -1156,8 +1839,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "watchLive": True,
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:4029",
-                "openclawDeliveryTarget": "telegram:-100123:topic:4029",
+                "openclawSessionKey": "agent:main:discord:target:example-opencode-thread",
+                "openclawDeliveryTarget": "discord:example-opencode-thread",
             }
 
             with mock.patch("opencode_manager.OpenCodeClient", return_value=fake_client), mock.patch(
@@ -1553,8 +2236,8 @@ class OpenCodeManagerTests(unittest.TestCase):
                             "watchProcessAlive": False,
                             "opencodeSessionId": "ses_demo",
                             "opencodeWorkspace": "/tmp/demo-workspace",
-                            "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
-                            "openclawDeliveryTarget": "telegram:-100123:topic:42",
+                            "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
+                            "openclawDeliveryTarget": "discord:example-origin-thread",
                             "watchExitReason": "manager_detach",
                             "watcherStatePath": str(state_path),
                             "watcherConfigPath": str(Path(tmpdir) / "watchers" / "ow_detached" / "config.json"),
@@ -1621,7 +2304,7 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "--opencode-workspace",
                 "/tmp/demo-workspace",
                 "--openclaw-session-key",
-                "agent:main:telegram:group:-100123:topic:42",
+                "agent:main:discord:target:example-origin-thread",
                 "--first-prompt-file",
                 "prompt.txt",
                 "--opencode-agent",
@@ -1636,6 +2319,7 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_start.first_prompt_file, "prompt.txt")
         self.assertIsNone(parsed_start.first_prompt)
         self.assertTrue(parsed_start.ensure_watcher)
+        self.assertTrue(parsed_start.watch_live)
         self.assertEqual(parsed_start.opencode_agent, "build")
         self.assertEqual(parsed_start.opencode_model, "openai/gpt-5")
         self.assertEqual(parsed_start.opencode_variant, "high")
@@ -1653,6 +2337,49 @@ class OpenCodeManagerTests(unittest.TestCase):
             ]
         )
         self.assertFalse(parsed_start_no_watcher.ensure_watcher)
+        self.assertTrue(parsed_start_no_watcher.watch_live)
+
+        parsed_start_dry_run = parser.parse_args(
+            [
+                "start",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-workspace",
+                "/tmp/demo-workspace",
+                "--first-prompt-file",
+                "prompt.txt",
+                "--watch-dry-run",
+            ]
+        )
+        self.assertFalse(parsed_start_dry_run.watch_live)
+
+        parsed_attach = parser.parse_args(
+            [
+                "attach",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+                "--openclaw-session-key",
+                "agent:main:discord:target:example-origin-thread",
+            ]
+        )
+        self.assertEqual(parsed_attach.command, "attach")
+        self.assertTrue(parsed_attach.watch_live)
+
+        parsed_attach_dry_run = parser.parse_args(
+            [
+                "attach",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+                "--openclaw-session-key",
+                "agent:main:discord:target:example-origin-thread",
+                "--watch-dry-run",
+            ]
+        )
+        self.assertFalse(parsed_attach_dry_run.watch_live)
 
         parsed_continue = parser.parse_args(
             [
@@ -1676,6 +2403,7 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertEqual(parsed_continue.follow_up_prompt_file, "-")
         self.assertIsNone(parsed_continue.follow_up_prompt)
         self.assertTrue(parsed_continue.ensure_watcher)
+        self.assertTrue(parsed_continue.watch_live)
         self.assertEqual(parsed_continue.opencode_agent, "build")
         self.assertEqual(parsed_continue.opencode_model, "openai/gpt-5")
         self.assertEqual(parsed_continue.opencode_variant, "medium")
@@ -1693,6 +2421,21 @@ class OpenCodeManagerTests(unittest.TestCase):
             ]
         )
         self.assertFalse(parsed_continue_no_watcher.ensure_watcher)
+        self.assertTrue(parsed_continue_no_watcher.watch_live)
+
+        parsed_continue_dry_run = parser.parse_args(
+            [
+                "continue",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+                "--follow-up-prompt-file",
+                "-",
+                "--watch-dry-run",
+            ]
+        )
+        self.assertFalse(parsed_continue_dry_run.watch_live)
 
         subparser_action = next(
             action
@@ -1706,6 +2449,13 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--opencode-model", start_help)
         self.assertIn("--opencode-variant", start_help)
         self.assertIn("--no-watcher", start_help)
+        self.assertIn("--watch-dry-run", start_help)
+        self.assertNotIn("--watch-live", start_help)
+        self.assertIn("defaults to live delivery", start_help)
+        attach_help = subparser_action.choices["attach"].format_help()
+        self.assertIn("--watch-dry-run", attach_help)
+        self.assertNotIn("--watch-live", attach_help)
+        self.assertIn("defaults to live delivery", attach_help)
         continue_help = subparser_action.choices["continue"].format_help()
         self.assertIn("--follow-up-prompt", continue_help)
         self.assertIn("--follow-up-prompt-file", continue_help)
@@ -1714,7 +2464,28 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--opencode-variant", continue_help)
         self.assertIn("--ensure-watcher", continue_help)
         self.assertIn("--no-watcher", continue_help)
-        self.assertIn("ensured by default", continue_help)
+        self.assertIn("--watch-dry-run", continue_help)
+        self.assertNotIn("--watch-live", continue_help)
+        self.assertIn("live delivery mode by default", continue_help)
+
+        parsed_inspect = parser.parse_args(
+            [
+                "inspect",
+                "--opencode-base-url",
+                "http://127.0.0.1:4096",
+                "--opencode-session-id",
+                "ses_demo",
+            ]
+        )
+        self.assertEqual(parsed_inspect.command, "inspect")
+        self.assertEqual(parsed_inspect.output_format, "text")
+        self.assertEqual(parsed_inspect.timeline_limit, 8)
+
+        inspect_help = subparser_action.choices["inspect"].format_help()
+        self.assertIn("--format {text,json}", inspect_help)
+        self.assertIn("--expand-index", inspect_help)
+        self.assertIn("--timeline-limit", inspect_help)
+        self.assertIn("--show-ids", inspect_help)
 
         parsed_history = parser.parse_args(
             [
@@ -1735,6 +2506,9 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("--message-id", history_help)
         self.assertIn("--recent-index", history_help)
         self.assertIn("--history-message-limit", history_help)
+        self.assertIn("--recover-missing-from-disk", history_help)
+        self.assertIn("recovery/debug only", history_help)
+        self.assertIn("needed for normal usage", history_help)
 
         parsed_stop_session = parser.parse_args(
             [
@@ -1754,6 +2528,10 @@ class OpenCodeManagerTests(unittest.TestCase):
         self.assertIn("verified, unverified, or likely failed", stop_session_help)
         self.assertIn("use stop-watcher or", stop_session_help)
         self.assertIn("detach separately only when monitoring should also stop", stop_session_help)
+        self.assertIn("--recover-missing-from-disk", stop_session_help)
+
+        watchers_help = subparser_action.choices["list-watchers"].format_help()
+        self.assertIn("--recover-missing-from-disk", watchers_help)
 
         parsed_stop = parser.parse_args(["stop-watcher", "--watcher-id", "ow_demo123"])
         self.assertEqual(parsed_stop.command, "stop-watcher")
@@ -1764,6 +2542,26 @@ class OpenCodeManagerTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             parse_model_override("gpt-5")
 
+    def test_normalize_inline_prompt_text_decodes_escaped_newlines_only_when_needed(self):
+        self.assertEqual(
+            normalize_inline_prompt_text("line1\\n\\nline2"),
+            "line1\n\nline2",
+        )
+        self.assertEqual(
+            normalize_inline_prompt_text("line1\n\nline2"),
+            "line1\n\nline2",
+        )
+
+    def test_resolve_prompt_input_applies_inline_newline_normalization(self):
+        out = resolve_prompt_input(
+            "A\\nB",
+            None,
+            text_flag="--follow-up-prompt",
+            file_flag="--follow-up-prompt-file",
+        )
+        self.assertEqual(out["inputMethod"], "text")
+        self.assertEqual(out["text"], "A\nB")
+
     def test_watcher_summary_keeps_explicit_field_names(self):
         summary = build_watcher_summary(
             {
@@ -1772,7 +2570,7 @@ class OpenCodeManagerTests(unittest.TestCase):
                 "opencodeBaseUrl": "http://127.0.0.1:4096",
                 "opencodeSessionId": "ses_demo",
                 "opencodeWorkspace": "/tmp/demo-workspace",
-                "openclawSessionKey": "agent:main:telegram:group:-100123:topic:42",
+                "openclawSessionKey": "agent:main:discord:target:example-origin-thread",
             }
         )
         self.assertIn("opencodeSessionId", summary)
