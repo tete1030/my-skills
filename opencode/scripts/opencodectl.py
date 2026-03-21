@@ -6,6 +6,8 @@ from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
 PY = sys.executable
+DEFAULT_NOTIFY_MIN_INTERVAL_SEC = 300
+DEFAULT_NOTIFY_MIN_PRIORITY = "high"
 
 
 def run_json(script_name: str, args: list[str]) -> int:
@@ -283,8 +285,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_watch.add_argument("--no-change-visible-after-min", type=int, default=30)
     p_watch.add_argument("--interval-sec", type=int, default=60)
     p_watch.add_argument("--idle-timeout-sec", type=int, default=0)
-    p_watch.add_argument("--notify-min-interval-sec", type=int, default=0)
-    p_watch.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default="low")
+    p_watch.add_argument("--notify-min-interval-sec", type=int, default=DEFAULT_NOTIFY_MIN_INTERVAL_SEC)
+    p_watch.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default=DEFAULT_NOTIFY_MIN_PRIORITY)
     p_watch.add_argument("--notify-min-severity", dest="notify_min_priority", choices=("low", "normal", "high"))
     p_watch.add_argument("--notify-keyword", action="append", default=[])
     p_watch.add_argument("--notify-filter-critical", action="store_true")

@@ -1,6 +1,6 @@
 ---
 name: opencode
-description: Manage OpenCode work from an OpenClaw conversation: start a new OpenCode task in a workspace, list or inspect existing OpenCode sessions, drill into one recent message when needed, continue an existing session, and attach/list/stop/detach local watchers that route progress back to the originating OpenClaw session. Prefer `scripts/opencode_manager.py` for normal conversation-driven usage. For agent-driven `start` / `continue`, watcher routing is the default and progress should return to the originating OpenClaw session unless the caller explicitly opts out with `--no-watcher` or is doing runtime/debug work. Also use when interpreting injected OpenCode runtime/system-event updates so they are treated as internal progress inputs, not echoed mechanically to the user. When OpenCode should stop, always use the real `stop-session` command / abort API; stopping the OpenCode session should not also stop the watcher unless the user explicitly asks to stop monitoring or detach it.
+description: "Manage OpenCode sessions from OpenClaw via scripts/opencode_manager.py (start, attach, continue, stop-session, list-sessions, inspect, inspect-history, list-watchers, stop-watcher, detach), with watcher routing back to the originating OpenClaw session by default. Use for OpenCode runtime/system-event interpretation and status handoff; use real stop-session/abort to stop runs."
 ---
 
 # Opencode

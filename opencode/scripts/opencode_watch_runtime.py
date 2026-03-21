@@ -20,6 +20,8 @@ DEFAULT_MESSAGE_LIMIT = 10
 DEFAULT_NO_CHANGE_VISIBLE_AFTER_MIN = 30
 DEFAULT_INTERVAL_SEC = 60
 DEFAULT_IDLE_TIMEOUT_SEC = 0
+DEFAULT_NOTIFY_MIN_INTERVAL_SEC = 300
+DEFAULT_NOTIFY_MIN_PRIORITY = "high"
 DEFAULT_LOG_ROTATE_BYTES = 16 * 1024 * 1024
 
 
@@ -186,8 +188,8 @@ def build_watch_command(paths: RuntimePaths, config: dict[str, Any], *, once: bo
     if token:
         command += ["--token", token]
 
-    notify_min_interval_sec = optional_config_int(config, 0, "notifyMinIntervalSec", "notify_min_interval_sec")
-    notify_min_priority = optional_config_string(config, "notifyMinPriority", "notify_min_priority", "notifyMinSeverity", "notify_min_severity") or "low"
+    notify_min_interval_sec = optional_config_int(config, DEFAULT_NOTIFY_MIN_INTERVAL_SEC, "notifyMinIntervalSec", "notify_min_interval_sec")
+    notify_min_priority = optional_config_string(config, "notifyMinPriority", "notify_min_priority", "notifyMinSeverity", "notify_min_severity") or DEFAULT_NOTIFY_MIN_PRIORITY
     notify_keywords = optional_config_string_list(config, "notifyKeywords", "notify_keywords")
     notify_filter_critical = optional_config_bool(config, False, "notifyFilterCritical", "notify_filter_critical")
     command += ["--notify-min-interval-sec", str(notify_min_interval_sec), "--notify-min-priority", notify_min_priority]

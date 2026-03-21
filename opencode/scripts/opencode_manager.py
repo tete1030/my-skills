@@ -35,10 +35,16 @@ DEFAULT_REGISTRY_PATH = REPO_ROOT / ".local" / "opencode-manager" / "registry.js
 DEFAULT_WATCHER_ROOT = REPO_ROOT / ".local" / "opencode-manager" / "watchers"
 DEFAULT_WATCH_INTERVAL_SEC = 60
 DEFAULT_IDLE_TIMEOUT_SEC = 900
+DEFAULT_NOTIFY_MIN_INTERVAL_SEC = 300
+DEFAULT_NOTIFY_MIN_PRIORITY = "high"
 DEFAULT_MESSAGE_LIMIT = 10
 DEFAULT_HISTORY_MESSAGE_LIMIT = 25
 DEFAULT_TIMEOUT_SEC = 20
 DEFAULT_STOP_TIMEOUT_SEC = 10
+DEFAULT_PROMPT_VERIFY_TIMEOUT_SEC = 8.0
+DEFAULT_PROMPT_VERIFY_POLL_SEC = 0.5
+DEFAULT_PROMPT_VERIFY_MESSAGE_LIMIT = 20
+DEFAULT_PROMPT_RETRY_COUNT = 1
 DEFAULT_HISTORY_ANCHOR_COUNT = 6
 DEFAULT_TARGETED_HISTORY_RECENT_INDEXES = (0, 1, 2)
 DEFAULT_INSPECT_TIMELINE_LIMIT = 8
@@ -55,6 +61,10 @@ WATCHER_HANDOFF_ACK = "已交给 OpenCode，后续进展会由 watcher 继续回
 NON_LIVE_WATCHER_ACK = "OpenCode 已收到请求，但当前 watcher 未处于 live 回传模式；后续不会自动回到这个 OpenClaw 会话。"
 MISSING_WATCHER_ACK = "OpenCode 已收到请求，但当前没有 live watcher 把后续进展回传到这个 OpenClaw 会话。"
 NO_WATCHER_ACK = "OpenCode 已收到请求；当前没有 watcher 负责把后续进展回传到这个 OpenClaw 会话。"
+
+ACTIVE_TODO_STATUSES = {"in_progress", "active", "running", "current"}
+PENDING_TODO_STATUSES = {"pending", "todo", "queued", "next", "open"}
+COMPLETED_TODO_STATUSES = {"completed", "done", "finished", "success", "succeeded", "resolved"}
 
 
 def now_utc() -> datetime:
@@ -349,8 +359,8 @@ def build_manager_watcher_config(entry: dict[str, Any]) -> dict[str, Any]:
         "watchIntervalSec": entry["watchIntervalSec"],
         "watchLive": entry["watchLive"],
         "idleTimeoutSec": entry["idleTimeoutSec"],
-        "notifyMinIntervalSec": entry.get("notifyMinIntervalSec", 0),
-        "notifyMinPriority": entry.get("notifyMinPriority", "low"),
+        "notifyMinIntervalSec": entry.get("notifyMinIntervalSec", DEFAULT_NOTIFY_MIN_INTERVAL_SEC),
+        "notifyMinPriority": entry.get("notifyMinPriority", DEFAULT_NOTIFY_MIN_PRIORITY),
         "notifyKeywords": entry.get("notifyKeywords") or [],
         "notifyFilterCritical": bool(entry.get("notifyFilterCritical", False)),
     }
@@ -443,8 +453,20 @@ def build_recovered_entry_from_watcher_dir(
         "watchLive": config.get("watchLive") if isinstance(config.get("watchLive"), bool) else config.get("live"),
         "watchIntervalSec": config.get("watchIntervalSec") or config.get("interval_sec"),
         "idleTimeoutSec": config.get("idleTimeoutSec") or config.get("idle_timeout_sec"),
-        "notifyMinIntervalSec": config.get("notifyMinIntervalSec") or config.get("notify_min_interval_sec") or 0,
-        "notifyMinPriority": config.get("notifyMinPriority") or config.get("notify_min_priority") or config.get("notifyMinSeverity") or config.get("notify_min_severity") or "low",
+        "notifyMinIntervalSec": coalesce(
+            config.get("notifyMinIntervalSec"),
+            coalesce(config.get("notify_min_interval_sec"), DEFAULT_NOTIFY_MIN_INTERVAL_SEC),
+        ),
+        "notifyMinPriority": coalesce(
+            config.get("notifyMinPriority"),
+            coalesce(
+                config.get("notify_min_priority"),
+                coalesce(
+                    config.get("notifyMinSeverity"),
+                    coalesce(config.get("notify_min_severity"), DEFAULT_NOTIFY_MIN_PRIORITY),
+                ),
+            ),
+        ),
         "notifyKeywords": config.get("notifyKeywords") or config.get("notify_keywords") or [],
         "notifyFilterCritical": bool(config.get("notifyFilterCritical") or config.get("notify_filter_critical") or False),
         "watchMessageLimit": config.get("watchMessageLimit") or config.get("message_limit"),
@@ -737,6 +759,44 @@ def snapshot_blocked_prompt_count(snapshot: dict[str, Any]) -> int:
 
 
 
+USAGE_LIMIT_HINT_TERMS = (
+    "usage limit",
+    "rate limit",
+    "quota",
+    "insufficient_quota",
+    "too many requests",
+    "429",
+)
+
+
+def snapshot_session_status(snapshot: dict[str, Any]) -> dict[str, Any] | None:
+    session_status = snapshot.get("sessionStatus")
+    if isinstance(session_status, dict):
+        return session_status
+    return None
+
+
+def session_status_type(snapshot: dict[str, Any]) -> str:
+    session_status = snapshot_session_status(snapshot)
+    if not session_status:
+        return ""
+    return str(session_status.get("type") or session_status.get("status") or "").strip().lower()
+
+
+def session_status_message(snapshot: dict[str, Any]) -> str:
+    session_status = snapshot_session_status(snapshot)
+    if not session_status:
+        return ""
+    return str(session_status.get("message") or session_status.get("reason") or "").strip()
+
+
+def is_usage_limit_message(message: Any) -> bool:
+    normalized = str(message or "").strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in USAGE_LIMIT_HINT_TERMS)
+
+
 def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str, Any], todo: dict[str, Any]) -> str:
     blocked_prompt_count = snapshot_blocked_prompt_count(snapshot)
     if blocked_prompt_count > 0:
@@ -749,9 +809,28 @@ def derive_inspection_status(snapshot: dict[str, Any], latest_message: dict[str,
         return "failed"
     if raw_status in {"failed", "error", "cancelled", "canceled"}:
         return "failed"
-    if todo.get("hasPendingWork"):
-        return "running"
+
+    status_type = session_status_type(snapshot)
+    status_message = session_status_message(snapshot)
+    if status_type in {"failed", "error"}:
+        return "failed"
+    if status_type == "retry" and status_message and is_usage_limit_message(status_message):
+        return "blocked"
+
     if str(latest_message.get("role") or "").strip().lower() == "user":
+        return "running"
+
+    finish = str(latest_message.get("finish") or latest_message.get("message.stopReason") or "").strip().lower()
+    has_terminal_completion = bool(
+        raw_status in {"completed", "done", "stopped", "success", "succeeded"}
+        or finish == "stop"
+        or latest_message.get("completed")
+        or latest_message.get("completedAt")
+    )
+    if has_terminal_completion:
+        return "completed"
+
+    if todo.get("hasPendingWork"):
         return "running"
     if raw_status:
         return raw_status
@@ -844,7 +923,13 @@ def verify_stop_session_attempt(
     while True:
         busy_map = client.session_status(directory=directory)
         busy_entry = busy_map.get(session_id) if isinstance(busy_map, dict) else None
-        snapshot, snapshot_errors = build_compact_snapshot(client, session_id, message_limit=message_limit)
+        snapshot, snapshot_errors = build_compact_snapshot(
+            client,
+            session_id,
+            message_limit=message_limit,
+            directory=directory,
+            workspace=directory,
+        )
         classified = classify_stop_verification(
             busy_entry=busy_entry,
             snapshot=snapshot,
@@ -1318,7 +1403,15 @@ def pending_prompt_kind_count(prompts: list[dict[str, Any]], kind: str) -> int:
 def build_current_blocker(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     pending_prompts = snapshot_pending_prompts(snapshot)
     blocked_prompt_count = snapshot_blocked_prompt_count(snapshot)
-    if blocked_prompt_count <= 0 and not pending_prompts:
+    status_type = session_status_type(snapshot)
+    status_message = session_status_message(snapshot)
+    retry_due_at = None
+    session_status = snapshot_session_status(snapshot)
+    if isinstance(session_status, dict):
+        retry_due_at = session_status.get("nextAt") or iso_from_epoch_ms(session_status.get("next"))
+
+    has_retry_blocker = status_type == "retry" and bool(status_message)
+    if blocked_prompt_count <= 0 and not pending_prompts and not has_retry_blocker:
         return None
 
     prompt_items = [
@@ -1341,15 +1434,19 @@ def build_current_blocker(snapshot: dict[str, Any]) -> dict[str, Any] | None:
     permission_count = pending_prompt_kind_count(pending_prompts, "permission")
     question_count = pending_prompt_kind_count(pending_prompts, "question")
 
+    inferred_phase = "model usage limit retry" if has_retry_blocker and is_usage_limit_message(status_message) else "provider retry"
     result = {
         "blockedPromptCount": blocked_prompt_count if blocked_prompt_count >= 0 else len(pending_prompts),
         "pendingPermissionCount": permission_count,
         "openQuestionCount": question_count,
         "blockedPromptKey": snapshot.get("blockedPromptKey"),
-        "blockedPhase": snapshot.get("blockedPhase"),
-        "blockedSummary": snapshot.get("blockedSummary"),
+        "blockedPhase": snapshot.get("blockedPhase") or (inferred_phase if has_retry_blocker else None),
+        "blockedSummary": snapshot.get("blockedSummary") or (status_message if has_retry_blocker else None),
         "pendingPrompts": prompt_items or None,
         "promptScope": snapshot.get("promptScope"),
+        "sessionStatusType": status_type or None,
+        "retryAttempt": session_status.get("attempt") if isinstance(session_status, dict) else None,
+        "retryDueAt": retry_due_at,
     }
     return {key: value for key, value in result.items() if value is not None}
 
@@ -1371,6 +1468,166 @@ def normalize_message_collection(messages: Any) -> list[dict[str, Any]]:
     else:
         items = [messages]
     return [item for item in items if isinstance(item, dict)]
+
+
+
+def message_info_payload(message: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(message, dict):
+        return {}
+    info = message.get("info")
+    return info if isinstance(info, dict) else {}
+
+
+
+def message_role(message: dict[str, Any] | None) -> str:
+    role = message_info_payload(message).get("role")
+    return str(role).strip().lower()
+
+
+
+def message_created_ms(message: dict[str, Any] | None) -> int:
+    info = message_info_payload(message)
+    time_payload = info.get("time") if isinstance(info, dict) else None
+    created = time_payload.get("created") if isinstance(time_payload, dict) else None
+    try:
+        return int(created)
+    except (TypeError, ValueError):
+        return -1
+
+
+
+def message_id(message: dict[str, Any] | None) -> str | None:
+    value = message_info_payload(message).get("id")
+    text = str(value).strip() if value is not None else ""
+    return text or None
+
+
+
+def message_parts_count(message: dict[str, Any] | None) -> int:
+    if not isinstance(message, dict):
+        return 0
+    parts = message.get("parts")
+    if isinstance(parts, list):
+        return len(parts)
+    return 0
+
+
+
+def latest_message_with_role(messages: list[dict[str, Any]], role: str | None = None) -> dict[str, Any] | None:
+    normalized_role = str(role).strip().lower() if role is not None else None
+    latest: dict[str, Any] | None = None
+    latest_created = -1
+    for message in messages:
+        if not isinstance(message, dict):
+            continue
+        if normalized_role is not None and message_role(message) != normalized_role:
+            continue
+        created = message_created_ms(message)
+        if created >= latest_created:
+            latest = message
+            latest_created = created
+    return latest
+
+
+
+def summarize_message_probe(message: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not isinstance(message, dict):
+        return None
+    info = message_info_payload(message)
+    return {
+        key: value
+        for key, value in {
+            "id": message_id(message),
+            "role": info.get("role"),
+            "createdAt": iso_from_epoch_ms(message_created_ms(message)),
+            "partsCount": message_parts_count(message),
+        }.items()
+        if value is not None
+    }
+
+
+
+def verify_prompt_delivery(
+    client: OpenCodeClient,
+    *,
+    session_id: str,
+    directory: str,
+    previous_latest_user_id: str | None,
+    previous_latest_any_id: str | None,
+    verify_wait_sec: float = DEFAULT_PROMPT_VERIFY_TIMEOUT_SEC,
+    verify_poll_sec: float = DEFAULT_PROMPT_VERIFY_POLL_SEC,
+    message_limit: int = DEFAULT_PROMPT_VERIFY_MESSAGE_LIMIT,
+) -> dict[str, Any]:
+    started_at = time.monotonic()
+    deadline = started_at + max(0.0, float(verify_wait_sec))
+    poll_sec = max(0.05, float(verify_poll_sec))
+    polls = 0
+    fetch_errors: list[str] = []
+    observed_latest_user: dict[str, Any] | None = None
+    observed_latest_any: dict[str, Any] | None = None
+
+    while True:
+        polls += 1
+        try:
+            messages = normalize_message_collection(
+                client.session_messages(
+                    session_id,
+                    limit=message_limit,
+                    directory=directory,
+                )
+            )
+        except Exception as exc:
+            fetch_errors.append(str(exc))
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(poll_sec)
+            continue
+
+        latest_any = latest_message_with_role(messages)
+        if latest_any:
+            observed_latest_any = latest_any
+
+        latest_user = latest_message_with_role(messages, role="user")
+        if latest_user:
+            observed_latest_user = latest_user
+            latest_user_id = message_id(latest_user)
+            if latest_user_id and latest_user_id != previous_latest_user_id:
+                parts_count = message_parts_count(latest_user)
+                if parts_count > 0:
+                    return {
+                        "verified": True,
+                        "reason": "new_user_message_with_parts",
+                        "pollCount": polls,
+                        "elapsedSec": round(time.monotonic() - started_at, 3),
+                        "latestUserMessage": summarize_message_probe(latest_user),
+                        "latestMessage": summarize_message_probe(latest_any),
+                        "fetchErrors": fetch_errors or None,
+                    }
+
+        if time.monotonic() >= deadline:
+            break
+        time.sleep(poll_sec)
+
+    latest_user_id = message_id(observed_latest_user)
+    latest_user_parts = message_parts_count(observed_latest_user) if observed_latest_user else 0
+    if latest_user_id and latest_user_id != previous_latest_user_id and latest_user_parts <= 0:
+        reason = "new_user_message_empty_parts"
+    elif message_id(observed_latest_any) and message_id(observed_latest_any) != previous_latest_any_id:
+        reason = "new_message_observed_but_user_prompt_not_materialized"
+    else:
+        reason = "no_new_message_observed"
+
+    return {
+        "verified": False,
+        "reason": reason,
+        "pollCount": polls,
+        "elapsedSec": round(time.monotonic() - started_at, 3),
+        "latestUserMessage": summarize_message_probe(observed_latest_user),
+        "latestMessage": summarize_message_probe(observed_latest_any),
+        "previousLatestUserId": previous_latest_user_id,
+        "previousLatestMessageId": previous_latest_any_id,
+        "fetchErrors": fetch_errors or None,
+    }
 
 
 
@@ -1828,6 +2085,71 @@ def render_expand_detail_text(history: dict[str, Any], *, show_ids: bool = False
 
 
 
+def normalize_todo_items(todo: dict[str, Any]) -> list[dict[str, Any]]:
+    items = todo.get("items") if isinstance(todo, dict) else None
+    if not isinstance(items, list):
+        return []
+
+    normalized: list[dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        if not isinstance(item, dict):
+            continue
+        content = item.get("content") or item.get("title") or item.get("name")
+        if not content:
+            continue
+        status = str(item.get("status") or "").strip().lower() or "unknown"
+        normalized_item = {
+            "index": index,
+            "content": str(content),
+            "status": status,
+        }
+        priority = item.get("priority")
+        if priority is not None:
+            normalized_item["priority"] = str(priority)
+        normalized.append(normalized_item)
+    return normalized
+
+
+def build_todo_summary(todo_items: list[dict[str, Any]]) -> dict[str, Any] | None:
+    if not todo_items:
+        return None
+
+    active_count = 0
+    pending_count = 0
+    completed_count = 0
+    other_count = 0
+
+    for item in todo_items:
+        status = str(item.get("status") or "").strip().lower()
+        if status in ACTIVE_TODO_STATUSES:
+            active_count += 1
+        elif status in PENDING_TODO_STATUSES:
+            pending_count += 1
+        elif status in COMPLETED_TODO_STATUSES:
+            completed_count += 1
+        else:
+            other_count += 1
+
+    return {
+        "total": len(todo_items),
+        "active": active_count,
+        "pending": pending_count,
+        "completed": completed_count,
+        "other": other_count,
+    }
+
+
+def todo_status_marker(status: Any) -> str:
+    normalized = str(status or "").strip().lower()
+    if normalized in COMPLETED_TODO_STATUSES:
+        return "[x]"
+    if normalized in ACTIVE_TODO_STATUSES:
+        return "[~]"
+    if normalized in PENDING_TODO_STATUSES:
+        return "[ ]"
+    return "[?]"
+
+
 def render_inspect_text(
     *,
     inspection: dict[str, Any],
@@ -1844,6 +2166,20 @@ def render_inspect_text(
     if inspection.get("currentPhase"):
         lines.append(f"Phase: {inspection.get('currentPhase')}")
 
+    session_status = inspection.get("sessionStatus") if isinstance(inspection.get("sessionStatus"), dict) else None
+    if session_status:
+        status_type = str(session_status.get("type") or session_status.get("status") or "").strip().lower()
+        status_message = session_status.get("message")
+        if status_type:
+            line = f"Session status: {status_type}"
+            if session_status.get("attempt") is not None:
+                line += f" (attempt {session_status.get('attempt')})"
+            if session_status.get("nextAt"):
+                line += f", next: {session_status.get('nextAt')}"
+            if status_message:
+                line += f" — {status_message}"
+            lines.append(line)
+
     current_blocker = inspection.get("currentBlocker") if isinstance(inspection.get("currentBlocker"), dict) else None
     if current_blocker:
         blocker_summary = current_blocker.get("blockedSummary") or current_blocker.get("blockedPhase") or "prompt pending"
@@ -1852,6 +2188,28 @@ def render_inspect_text(
     latest_preview = inspection.get("latestMeaningfulPreview")
     if latest_preview:
         lines.append(f"Progress: {latest_preview}")
+
+    todo_summary = inspection.get("todoSummary") if isinstance(inspection.get("todoSummary"), dict) else None
+    todo_items = inspection.get("todoItems") if isinstance(inspection.get("todoItems"), list) else []
+    if todo_summary:
+        lines.append(
+            "To-do summary: "
+            f"{todo_summary.get('active', 0)} active, "
+            f"{todo_summary.get('pending', 0)} pending, "
+            f"{todo_summary.get('completed', 0)} completed"
+        )
+        if int(todo_summary.get("other", 0) or 0) > 0:
+            lines.append(f"To-do other states: {todo_summary.get('other')}")
+
+    if todo_items:
+        lines.append("")
+        lines.append("To-do list:")
+        for item in todo_items:
+            marker = todo_status_marker(item.get("status"))
+            priority = item.get("priority")
+            priority_suffix = f" (priority: {priority})" if priority else ""
+            status_suffix = f" [{item.get('status')}]" if marker == "[?]" and item.get("status") else ""
+            lines.append(f"{marker} {item.get('content')}{priority_suffix}{status_suffix}")
 
     conclusion = inspection.get("finalConclusion")
     if conclusion:
@@ -1892,16 +2250,24 @@ def build_inspection(
 ) -> dict[str, Any]:
     todo = snapshot.get("todo") if isinstance(snapshot.get("todo"), dict) else {}
     latest_message = snapshot.get("latestMessage") if isinstance(snapshot.get("latestMessage"), dict) else {}
-    completed_work = []
-    for item in todo.get("items") or []:
-        if isinstance(item, dict) and item.get("status") == "completed":
-            completed_work.append(item.get("content"))
+    todo_items = normalize_todo_items(todo)
+    todo_summary = build_todo_summary(todo_items)
+    completed_work = [
+        item.get("content")
+        for item in todo_items
+        if str(item.get("status") or "").strip().lower() in COMPLETED_TODO_STATUSES and item.get("content")
+    ]
 
     current_status = derive_inspection_status(snapshot, latest_message, todo)
     current_blocker = build_current_blocker(snapshot)
-    current_phase = snapshot.get("blockedPhase") if current_status == "blocked" and snapshot.get("blockedPhase") else todo.get("phase")
+    current_phase = (
+        snapshot.get("blockedPhase")
+        if current_status == "blocked" and snapshot.get("blockedPhase")
+        else (current_blocker.get("blockedPhase") if current_status == "blocked" and current_blocker else todo.get("phase"))
+    )
     latest_meaningful_preview = (
-        snapshot.get("blockedSummary")
+        (current_blocker.get("blockedSummary") if current_blocker else None)
+        or snapshot.get("blockedSummary")
         or snapshot.get("latestTextPreview")
         or snapshot.get("latestAssistantTextPreview")
         or latest_message.get("errorPreview")
@@ -1922,12 +2288,15 @@ def build_inspection(
                 "latestMeaningfulPreview": latest_meaningful_preview,
                 "hasPendingWork": todo.get("hasPendingWork"),
                 "allTodosCompleted": todo.get("allCompleted"),
+                "todoSummary": todo_summary,
                 "blockedPromptCount": current_blocker.get("blockedPromptCount") if current_blocker else None,
                 "pendingPermissionCount": current_blocker.get("pendingPermissionCount") if current_blocker else None,
                 "openQuestionCount": current_blocker.get("openQuestionCount") if current_blocker else None,
                 "blockedPromptKey": current_blocker.get("blockedPromptKey") if current_blocker else None,
                 "blockedPhase": current_blocker.get("blockedPhase") if current_blocker else None,
                 "blockedSummary": current_blocker.get("blockedSummary") if current_blocker else None,
+                "sessionStatusType": session_status_type(snapshot) or None,
+                "sessionStatusMessage": session_status_message(snapshot) or None,
                 "runningProgressObservation": running_progress_observation,
                 "transportErrorHints": transport_error_hints,
             }.items()
@@ -1955,11 +2324,14 @@ def build_inspection(
         "currentPhase": current_phase,
         "hasPendingWork": todo.get("hasPendingWork"),
         "allTodosCompleted": todo.get("allCompleted"),
+        "todoSummary": todo_summary,
+        "todoItems": todo_items or None,
         "currentBlocker": current_blocker,
         "completedWork": completed_work[-5:] or None,
         "latestMeaningfulPreview": latest_meaningful_preview,
         "latestUserInputSummary": snapshot.get("latestUserInputSummary"),
         "latestMessage": build_inspect_latest_message(latest_message),
+        "sessionStatus": snapshot_session_status(snapshot),
         "runningProgressObservation": running_progress_observation,
         "transportErrorHints": transport_error_hints,
         "rehydration": {key: value for key, value in rehydration.items() if value is not None},
@@ -2093,7 +2465,12 @@ def normalize_workspace_scope(value: Any) -> str | None:
 
 
 
-def resolve_stop_session_workspace(*, requested_workspace: str | None, session_data: dict[str, Any]) -> str:
+def resolve_prompt_workspace(
+    *,
+    command_name: str,
+    requested_workspace: str | None,
+    session_data: dict[str, Any],
+) -> str:
     actual_workspace_raw = session_data.get("directory")
     actual_workspace = normalize_workspace_scope(actual_workspace_raw)
     requested_normalized = normalize_workspace_scope(requested_workspace)
@@ -2101,18 +2478,27 @@ def resolve_stop_session_workspace(*, requested_workspace: str | None, session_d
     if requested_workspace is not None:
         if actual_workspace is None:
             raise ValueError(
-                "stop-session could not verify the session directory for the explicit --opencode-workspace value"
+                f"{command_name} could not verify the session directory for the explicit --opencode-workspace value"
             )
         if requested_normalized != actual_workspace:
             raise ValueError(
-                "stop-session refused to abort because explicit --opencode-workspace does not match the "
-                f"session directory (requested={requested_workspace!r}, actual={actual_workspace_raw!r})"
+                f"{command_name} refused because explicit --opencode-workspace does not match the session directory "
+                f"(requested={requested_workspace!r}, actual={actual_workspace_raw!r})"
             )
 
     resolved_workspace = actual_workspace or requested_normalized
     if not isinstance(resolved_workspace, str) or not resolved_workspace:
-        raise ValueError("stop-session requires a resolvable opencodeWorkspace")
+        raise ValueError(f"{command_name} requires a resolvable opencodeWorkspace")
     return resolved_workspace
+
+
+
+def resolve_stop_session_workspace(*, requested_workspace: str | None, session_data: dict[str, Any]) -> str:
+    return resolve_prompt_workspace(
+        command_name="stop-session",
+        requested_workspace=requested_workspace,
+        session_data=session_data,
+    )
 
 
 
@@ -2295,11 +2681,17 @@ def resolve_continue_watcher_request(
     notify_min_interval_sec = int(
         coalesce(
             getattr(args, "notify_min_interval_sec", None),
-            latest_entry.get("notifyMinIntervalSec") if latest_entry and latest_entry.get("notifyMinIntervalSec") is not None else 0,
+            latest_entry.get("notifyMinIntervalSec") if latest_entry and latest_entry.get("notifyMinIntervalSec") is not None else DEFAULT_NOTIFY_MIN_INTERVAL_SEC,
         )
-        or 0
+        or DEFAULT_NOTIFY_MIN_INTERVAL_SEC
     )
-    notify_min_priority = str(coalesce(getattr(args, "notify_min_priority", None), latest_entry.get("notifyMinPriority") if latest_entry else "low") or "low")
+    notify_min_priority = str(
+        coalesce(
+            getattr(args, "notify_min_priority", None),
+            latest_entry.get("notifyMinPriority") if latest_entry else DEFAULT_NOTIFY_MIN_PRIORITY,
+        )
+        or DEFAULT_NOTIFY_MIN_PRIORITY
+    )
     notify_keywords = list(coalesce(getattr(args, "notify_keyword", None), latest_entry.get("notifyKeywords") if latest_entry else []) or [])
     notify_filter_critical = bool(coalesce(getattr(args, "notify_filter_critical", None), latest_entry.get("notifyFilterCritical") if latest_entry else False))
     watch_message_limit = int(coalesce(args.watch_message_limit, latest_entry.get("watchMessageLimit") if latest_entry else DEFAULT_MESSAGE_LIMIT))
@@ -2519,7 +2911,13 @@ def inspect_command(args: argparse.Namespace) -> dict[str, Any]:
         opencode_session_id=args.opencode_session_id,
         opencode_workspace=args.opencode_workspace,
     )
-    snapshot, _errors = build_compact_snapshot(client, args.opencode_session_id, message_limit=args.watch_message_limit)
+    snapshot, _errors = build_compact_snapshot(
+        client,
+        args.opencode_session_id,
+        message_limit=args.watch_message_limit,
+        directory=args.opencode_workspace,
+        workspace=args.opencode_workspace,
+    )
 
     with locked_registry(registry_path) as (registry, _path):
         refresh_registry_entries(
@@ -2735,8 +3133,8 @@ def start_command(args: argparse.Namespace) -> dict[str, Any]:
             watch_live=args.watch_live,
             watch_interval_sec=args.watch_interval_sec,
             idle_timeout_sec=args.idle_timeout_sec,
-            notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
-            notify_min_priority=getattr(args, "notify_min_priority", "low"),
+            notify_min_interval_sec=getattr(args, "notify_min_interval_sec", DEFAULT_NOTIFY_MIN_INTERVAL_SEC),
+            notify_min_priority=getattr(args, "notify_min_priority", DEFAULT_NOTIFY_MIN_PRIORITY),
             notify_keywords=getattr(args, "notify_keyword", []),
             notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
             watch_message_limit=args.watch_message_limit,
@@ -2805,8 +3203,8 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
         watch_live=args.watch_live,
         watch_interval_sec=args.watch_interval_sec,
         idle_timeout_sec=args.idle_timeout_sec,
-        notify_min_interval_sec=getattr(args, "notify_min_interval_sec", 0),
-        notify_min_priority=getattr(args, "notify_min_priority", "low"),
+        notify_min_interval_sec=getattr(args, "notify_min_interval_sec", DEFAULT_NOTIFY_MIN_INTERVAL_SEC),
+        notify_min_priority=getattr(args, "notify_min_priority", DEFAULT_NOTIFY_MIN_PRIORITY),
         notify_keywords=getattr(args, "notify_keyword", []),
         notify_filter_critical=bool(getattr(args, "notify_filter_critical", False)),
         watch_message_limit=args.watch_message_limit,
@@ -2819,7 +3217,13 @@ def attach_command(args: argparse.Namespace) -> dict[str, Any]:
         command_name="attach",
     )
 
-    snapshot, _errors = build_compact_snapshot(client, args.opencode_session_id, message_limit=args.watch_message_limit)
+    snapshot, _errors = build_compact_snapshot(
+        client,
+        args.opencode_session_id,
+        message_limit=args.watch_message_limit,
+        directory=opencode_workspace,
+        workspace=opencode_workspace,
+    )
 
     return {
         "kind": "opencode_manager_attach_v1",
@@ -2861,6 +3265,11 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
         opencode_session_id=args.opencode_session_id,
         opencode_workspace=args.opencode_workspace,
     )
+    resolved_workspace = resolve_prompt_workspace(
+        command_name="continue",
+        requested_workspace=args.opencode_workspace,
+        session_data=session_data,
+    )
 
     watcher_payload = None
     if watcher_requested:
@@ -2884,15 +3293,66 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
             command_name="continue",
         )
 
-    client.prompt_session(
-        args.opencode_session_id,
-        directory=args.opencode_workspace or session_data.get("directory"),
-        parts=[{"type": "text", "text": follow_up_prompt["text"]}],
-        model=prompt_overrides["model"],
-        agent=prompt_overrides["agent"],
-        variant=prompt_overrides["variant"],
-        asynchronous=True,
-    )
+    baseline_probe_error = None
+    before_latest_user_id = None
+    before_latest_any_id = None
+    try:
+        baseline_messages = normalize_message_collection(
+            client.session_messages(
+                args.opencode_session_id,
+                limit=DEFAULT_PROMPT_VERIFY_MESSAGE_LIMIT,
+                directory=resolved_workspace,
+            )
+        )
+        before_latest_user_id = message_id(latest_message_with_role(baseline_messages, role="user"))
+        before_latest_any_id = message_id(latest_message_with_role(baseline_messages))
+    except Exception as exc:
+        baseline_probe_error = str(exc)
+
+    delivery_checks: list[dict[str, Any]] = []
+    verify_result: dict[str, Any] | None = None
+    send_attempts = 0
+    for _attempt in range(DEFAULT_PROMPT_RETRY_COUNT + 1):
+        send_attempts += 1
+        client.prompt_session(
+            args.opencode_session_id,
+            directory=resolved_workspace,
+            parts=[{"type": "text", "text": follow_up_prompt["text"]}],
+            model=prompt_overrides["model"],
+            agent=prompt_overrides["agent"],
+            variant=prompt_overrides["variant"],
+            asynchronous=True,
+        )
+        verify_result = verify_prompt_delivery(
+            client,
+            session_id=args.opencode_session_id,
+            directory=resolved_workspace,
+            previous_latest_user_id=before_latest_user_id,
+            previous_latest_any_id=before_latest_any_id,
+        )
+        delivery_checks.append(verify_result)
+        if verify_result.get("verified"):
+            break
+
+        latest_user = verify_result.get("latestUserMessage") if isinstance(verify_result, dict) else None
+        latest_any = verify_result.get("latestMessage") if isinstance(verify_result, dict) else None
+        if isinstance(latest_user, dict) and latest_user.get("id"):
+            before_latest_user_id = str(latest_user.get("id"))
+        if isinstance(latest_any, dict) and latest_any.get("id"):
+            before_latest_any_id = str(latest_any.get("id"))
+
+    if not verify_result or not verify_result.get("verified"):
+        failure_payload = {
+            "reason": verify_result.get("reason") if isinstance(verify_result, dict) else "unknown",
+            "sendAttempts": send_attempts,
+            "baselineProbeError": baseline_probe_error,
+            "lastCheck": verify_result,
+            "workspace": resolved_workspace,
+        }
+        raise RuntimeError(
+            "continue prompt delivery verification failed; OpenCode accepted request but did not materialize "
+            f"a usable user prompt with parts. details={json.dumps(failure_payload, ensure_ascii=False)}"
+        )
 
     session_summary = build_session_summary(session_data, opencode_base_url=args.opencode_base_url, watcher_entry=watcher_entry)
 
@@ -2905,6 +3365,14 @@ def continue_command(args: argparse.Namespace) -> dict[str, Any]:
             "inputMethod": follow_up_prompt["inputMethod"],
             "promptFile": follow_up_prompt.get("promptFile"),
             "promptPreview": preview_text(follow_up_prompt["text"]),
+            "workspace": resolved_workspace,
+        },
+        "deliveryVerification": {
+            "verified": True,
+            "sendAttempts": send_attempts,
+            "retryCount": max(0, send_attempts - 1),
+            "baselineProbeError": baseline_probe_error,
+            "checks": delivery_checks,
         },
         "ensureWatcherRequested": watcher_requested,
         "registryPath": str(registry_path),
@@ -3130,8 +3598,8 @@ def add_common_runtime_options(
     )
     command_parser.add_argument("--watch-interval-sec", type=int, default=DEFAULT_WATCH_INTERVAL_SEC)
     command_parser.add_argument("--idle-timeout-sec", type=int, default=DEFAULT_IDLE_TIMEOUT_SEC)
-    command_parser.add_argument("--notify-min-interval-sec", type=int, default=0)
-    command_parser.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default="low")
+    command_parser.add_argument("--notify-min-interval-sec", type=int, default=DEFAULT_NOTIFY_MIN_INTERVAL_SEC)
+    command_parser.add_argument("--notify-min-priority", choices=("low", "normal", "high"), default=DEFAULT_NOTIFY_MIN_PRIORITY)
     command_parser.add_argument("--notify-min-severity", dest="notify_min_priority", choices=("low", "normal", "high"))
     command_parser.add_argument("--notify-keyword", action="append", default=[])
     command_parser.add_argument("--notify-filter-critical", action="store_true")

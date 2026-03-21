@@ -54,18 +54,31 @@ def load_json(path: Path):
     return json.loads(path.read_text())
 
 
+def blocked_subtype(phase: Any) -> str:
+    text = str(phase or "").strip().lower()
+    if "permission" in text and "question" in text:
+        return "blocked"
+    if "permission" in text:
+        return "permission"
+    if "question" in text:
+        return "question"
+    return "blocked"
+
+
 def update_type(turn_result):
     fact = turn_result.get("factSkeleton") or {}
     cadence = turn_result.get("cadence") or {}
-    status = fact.get("status")
+    status = str(fact.get("status") or "").strip().lower()
     should_send = bool(turn_result.get("shouldSend"))
 
     if not should_send:
         return "silent"
     if status == "blocked":
-        return "blocked"
-    if status == "failed":
+        return blocked_subtype(fact.get("phase"))
+    if status in {"failed", "error"}:
         return "failed"
+    if status in {"stalled", "deviated"}:
+        return "blocked"
     if status == "completed":
         return "completed"
     if cadence.get("noChange"):
@@ -74,7 +87,7 @@ def update_type(turn_result):
 
 
 def priority_for(kind: str) -> str:
-    if kind in {"blocked", "failed"}:
+    if kind in {"blocked", "permission", "question", "failed"}:
         return "high"
     if kind in {"completed", "progress"}:
         return "normal"
@@ -86,6 +99,8 @@ def style_for(kind: str) -> str:
         "progress": "brief_progress",
         "heartbeat": "brief_heartbeat",
         "blocked": "brief_blocker",
+        "permission": "brief_blocker",
+        "question": "brief_blocker",
         "failed": "brief_failure",
         "completed": "brief_completion",
         "silent": "silent",

@@ -107,6 +107,27 @@ def blocked_prompt_count(snapshot) -> int:
     return -1
 
 
+USAGE_LIMIT_HINT_TERMS = (
+    "usage limit",
+    "rate limit",
+    "quota",
+    "insufficient_quota",
+    "too many requests",
+    "429",
+)
+
+
+def session_status(snapshot):
+    value = snapshot.get("sessionStatus")
+    return value if isinstance(value, dict) else {}
+
+
+def is_usage_limit_message(message) -> bool:
+    normalized = str(message or "").strip().lower()
+    if not normalized:
+        return False
+    return any(term in normalized for term in USAGE_LIMIT_HINT_TERMS)
+
 
 def derive_status(snapshot, previous_status="idle"):
     latest = snapshot.get("latestMessage") or {}
@@ -127,8 +148,13 @@ def derive_status(snapshot, previous_status="idle"):
     if raw_status in {"failed", "error"}:
         return "failed"
 
-    if todo_pending_state(todo):
-        return "running"
+    status_payload = session_status(snapshot)
+    status_type = str(status_payload.get("type") or status_payload.get("status") or "").strip().lower()
+    status_message = str(status_payload.get("message") or status_payload.get("reason") or "").strip()
+    if status_type in {"failed", "error"}:
+        return "failed"
+    if status_type == "retry" and status_message and is_usage_limit_message(status_message):
+        return "blocked"
 
     role = str(latest.get("role") or "").lower()
     finish = str(latest.get("finish") or latest.get("message.stopReason") or "").lower()
@@ -139,8 +165,17 @@ def derive_status(snapshot, previous_status="idle"):
     if role == "user":
         return "running"
 
-    if finish == "stop":
+    has_terminal_completion = bool(
+        raw_status in {"completed", "done", "stopped", "success", "succeeded"}
+        or finish == "stop"
+        or latest.get("completed")
+        or latest.get("completedAt")
+    )
+    if has_terminal_completion:
         return "completed"
+
+    if todo_pending_state(todo):
+        return "running"
 
     if latest.get("completed") and has_text:
         return "completed"
@@ -155,8 +190,14 @@ def derive_status(snapshot, previous_status="idle"):
 
 
 
-def build_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10):
-    snapshot, _errors = build_compact_snapshot(client, session_id, message_limit=message_limit)
+def build_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10, directory: str | None = None):
+    snapshot, _errors = build_compact_snapshot(
+        client,
+        session_id,
+        message_limit=message_limit,
+        directory=directory,
+        workspace=directory,
+    )
     return snapshot
 
 
@@ -168,12 +209,17 @@ def snapshot_to_observation(snapshot, state):
     todo_digest = stable_digest(todo) if todo is not None else state.get("lastTodoDigest")
     status = derive_status(snapshot, previous_status=state.get("status"))
     blocked_phase = snapshot.get("blockedPhase")
+    session_status_payload = session_status(snapshot)
+    session_status_message = str(session_status_payload.get("message") or session_status_payload.get("reason") or "").strip()
+    session_status_type = str(session_status_payload.get("type") or session_status_payload.get("status") or "").strip().lower()
+    if not blocked_phase and status == "blocked" and session_status_type == "retry":
+        blocked_phase = "model usage limit retry" if is_usage_limit_message(session_status_message) else "provider retry"
     phase = blocked_phase if status == "blocked" and blocked_phase else derive_phase(todo, fallback=state.get("phase"))
     blocked_prompt_key = snapshot.get("blockedPromptKey")
     blocked_prompt_count_value = blocked_prompt_count(snapshot)
     if blocked_prompt_count_value < 0:
         blocked_prompt_count_value = None
-    blocked_summary = snapshot.get("blockedSummary")
+    blocked_summary = snapshot.get("blockedSummary") or (session_status_message if status == "blocked" and session_status_message else None)
     last_updated_ms = int(datetime.now(timezone.utc).timestamp() * 1000)
     progress_observation = analyze_running_progress(snapshot, current_status=status, now_ms=last_updated_ms)
     transport_error_hints = summarize_transport_errors(snapshot.get("errors"))

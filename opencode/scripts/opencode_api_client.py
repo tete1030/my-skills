@@ -314,11 +314,11 @@ class OpenCodeClient:
         params = {"sessionID": session_id} if session_id else {}
         return self.get_json('/pty', **params)
 
-    def permission(self) -> Any:
-        return self.get_json('/permission')
+    def permission(self, *, directory: Optional[str] = None, workspace: Optional[str] = None) -> Any:
+        return self.get_json('/permission', directory=directory, workspace=workspace)
 
-    def question(self) -> Any:
-        return self.get_json('/question')
+    def question(self, *, directory: Optional[str] = None, workspace: Optional[str] = None) -> Any:
+        return self.get_json('/question', directory=directory, workspace=workspace)
 
     def latest_message(self, session_id: str, *, directory: Optional[str] = None, workspace: Optional[str] = None) -> Any:
         data = self.session_messages(session_id, limit=1, directory=directory, workspace=workspace)

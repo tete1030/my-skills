@@ -14,9 +14,11 @@ PY = sys.executable
 SCRIPT_DIR = Path(__file__).resolve().parent
 OPENCODECTL = SCRIPT_DIR / "opencodectl.py"
 WATCH_STATE_KEY = "watchRunner"
-TERMINAL_OR_IDLE_STATUSES = {"completed", "failed", "blocked", "deviated", "stalled", "idle"}
+TERMINAL_OR_IDLE_STATUSES = {"completed", "failed", "deviated", "stalled", "idle"}
 PRIORITY_RANK = {"low": 0, "normal": 1, "high": 2}
-CRITICAL_UPDATE_TYPES = {"completed", "failed", "blocked"}
+DEFAULT_NOTIFY_MIN_INTERVAL_SEC = 300
+DEFAULT_NOTIFY_MIN_PRIORITY = "high"
+CRITICAL_UPDATE_TYPES = {"completed", "failed", "blocked", "permission", "question"}
 
 
 def now_utc() -> datetime:
@@ -179,8 +181,8 @@ def decide_watch_action(
     task_cluster: dict[str, Any] | None = None,
     handoff: dict[str, Any] | None = None,
     turn: dict[str, Any] | None = None,
-    notify_min_interval_sec: int = 0,
-    notify_min_priority: str = "low",
+    notify_min_interval_sec: int = DEFAULT_NOTIFY_MIN_INTERVAL_SEC,
+    notify_min_priority: str = DEFAULT_NOTIFY_MIN_PRIORITY,
     notify_keywords: list[str] | None = None,
     notify_filter_critical: bool = False,
 ) -> dict[str, Any]:
@@ -503,8 +505,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--no-change-visible-after-min", type=int, default=30)
     p.add_argument("--interval-sec", type=int, default=60)
     p.add_argument("--idle-timeout-sec", type=int, default=0, help="exit after terminal/idle status stays unchanged for this many seconds; 0 disables idle exit")
-    p.add_argument("--notify-min-interval-sec", type=int, default=0, help="minimum interval for non-critical visible notifications; critical updates bypass this throttle unless --notify-filter-critical is set")
-    p.add_argument("--notify-min-priority", choices=sorted(PRIORITY_RANK), default="low", help="minimum non-critical notification priority to deliver")
+    p.add_argument("--notify-min-interval-sec", type=int, default=DEFAULT_NOTIFY_MIN_INTERVAL_SEC, help="minimum interval for non-critical visible notifications; critical updates bypass this throttle unless --notify-filter-critical is set")
+    p.add_argument("--notify-min-priority", choices=sorted(PRIORITY_RANK), default=DEFAULT_NOTIFY_MIN_PRIORITY, help="minimum non-critical notification priority to deliver")
     p.add_argument("--notify-keyword", action="append", default=[], help="case-insensitive keyword filter for non-critical notifications; may be repeated")
     p.add_argument("--notify-filter-critical", action="store_true", help="apply notify interval/priority/keyword filters to critical updates too; default preserves critical notifications")
     p.add_argument("--loop", action="store_true")

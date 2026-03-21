@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import argparse
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
@@ -974,6 +975,31 @@ def iso_from_epoch_ms(value: Any) -> Optional[str]:
 
 
 
+def normalize_session_status(status_payload: Any, session_id: str) -> Dict[str, Any] | None:
+    if not isinstance(status_payload, dict):
+        return None
+    raw = status_payload.get(session_id)
+    if not isinstance(raw, dict):
+        return None
+
+    next_value = raw.get("next")
+    next_at = iso_from_epoch_ms(next_value)
+    result = {
+        "type": raw.get("type") or raw.get("status"),
+        "attempt": raw.get("attempt"),
+        "message": raw.get("message") or raw.get("reason"),
+        "next": next_value,
+        "nextAt": next_at,
+    }
+    normalized = {key: value for key, value in result.items() if value is not None}
+    if not normalized:
+        return None
+    if "type" in normalized:
+        normalized["type"] = str(normalized["type"]).strip().lower()
+    return normalized
+
+
+
 def analyze_running_progress(snapshot: Dict[str, Any], *, current_status: str | None, now_ms: int | None = None, long_running_threshold_sec: int = 180) -> Dict[str, Any] | None:
     if str(current_status or "").strip().lower() != "running":
         return None
@@ -1106,7 +1132,14 @@ def analyze_running_progress(snapshot: Dict[str, Any], *, current_status: str | 
 
 
 
-def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limit: int = 10) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
+def build_compact_snapshot(
+    client: OpenCodeClient,
+    session_id: str,
+    message_limit: int = 10,
+    *,
+    directory: str | None = None,
+    workspace: str | None = None,
+) -> Tuple[Dict[str, Any], Dict[str, Dict[str, Any]]]:
     errors: Dict[str, Dict[str, Any]] = {}
 
     def attempt(name, fn):
@@ -1116,12 +1149,48 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
             errors[name] = serialize_snapshot_error(exc)
             return None
 
-    messages = attempt("messages", lambda: client.session_messages(session_id, limit=message_limit))
-    todo = attempt("todo", lambda: client.session_todo(session_id))
-    status = attempt("status", client.session_status)
-    permission = attempt("permission", client.permission)
-    question = attempt("question", client.question)
+    resolved_directory = directory
+    resolved_workspace = workspace
+    if not resolved_directory:
+        session_payload = attempt("session", lambda: client.get_session(session_id))
+        if isinstance(session_payload, dict):
+            resolved_directory = session_payload.get("directory") or resolved_directory
+            resolved_workspace = session_payload.get("directory") or resolved_workspace
 
+    messages = attempt(
+        "messages",
+        lambda: client.session_messages(
+            session_id,
+            limit=message_limit,
+            directory=resolved_directory,
+            workspace=resolved_workspace,
+        ),
+    )
+    todo = attempt(
+        "todo",
+        lambda: client.session_todo(
+            session_id,
+            directory=resolved_directory,
+            workspace=resolved_workspace,
+        ),
+    )
+    status_map = attempt(
+        "status",
+        lambda: client.session_status(
+            directory=resolved_directory,
+            workspace=resolved_workspace,
+        ),
+    )
+    permission = attempt(
+        "permission",
+        lambda: client.permission(directory=resolved_directory, workspace=resolved_workspace),
+    )
+    question = attempt(
+        "question",
+        lambda: client.question(directory=resolved_directory, workspace=resolved_workspace),
+    )
+
+    session_status = normalize_session_status(status_map, session_id)
     message_summary = summarize_recent_messages(messages)
     prompt_state = normalize_pending_prompts(
         session_id=session_id,
@@ -1146,7 +1215,8 @@ def build_compact_snapshot(client: OpenCodeClient, session_id: str, message_limi
         "messageWindowSize": message_summary.get("messageWindowSize"),
         "messageWindowLimit": message_limit,
         "todo": normalize_todo(todo),
-        "status": status,
+        "status": session_status.get("type") if isinstance(session_status, dict) else None,
+        "sessionStatus": session_status,
         "permission": permission,
         "question": question,
         "pendingPrompts": prompt_state.get("pendingPrompts"),

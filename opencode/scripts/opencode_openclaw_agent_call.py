@@ -61,12 +61,14 @@ def build_agent_message(system_event_text: str, *, handoff: dict | None = None) 
     preamble = ["Runtime signal for the current conversation."]
     if runtime_signal.get("action") == "inspect_once_current_state":
         preamble.append(f"Inspect {session_hint} once and answer from inspected current state, not from this event body.")
-        preamble.append("Use rehydration.currentState plus rehydration.sinceLatestUserInput.")
-        preamble.append("If detail is missing, expand one timeline item via inspect --expand-index N; use inspect-history only for older/broader fallback.")
+        preamble.append("Default to plain-text inspect output (run inspect without --format json).")
+        preamble.append("Use --expand-index N for one timeline item when detail is missing; use inspect-history only for older/broader fallback.")
+        preamble.append("Use --format json only when text output is insufficient for a required field.")
         preamble.append("Do not start or attach a watcher, and do not keep polling from this session.")
     if task_cluster.get("key") and reply_policy.get("replyDefault") == "send_if_not_cluster_superseded":
         preamble.append("Send a visible reply only when inspected state adds net-new user-visible progress for this task cluster.")
         preamble.append("Across this chat's same-cluster chain (even if newer OpenCode user input appears), allow at most one running progress reply and one first terminal reply; later equal/weaker/duplicate/superseded states are NO_REPLY.")
+        preamble.append("Hard override: if inspected state is blocked, has pendingPermissionCount>0, or openQuestionCount>0, send a visible reply (never NO_REPLY).")
         preamble.append("When suppressing, output exactly NO_REPLY.")
 
     return "\n".join([
