@@ -47,6 +47,7 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 
 ### 4) Quick chooser
 
+- Default for ongoing task clusters: reuse the active OpenCode session with `continue`; do not `start` a new session unless the user explicitly asks for a fresh session, or the existing session is clearly unusable/corrupted for the agreed scope.
 - Fresh work in a workspace -> `start` (normal path: this ensures a watcher for the provided OpenClaw session by default; use `--no-watcher` only when the caller explicitly wants no routed progress or is doing narrow runtime/debug work)
 - Need to find an existing session first -> `list-sessions`
 - Need current state of one existing session -> `inspect` (default output is compact timeline text; use `--format json` only when explicitly needed)
@@ -58,6 +59,27 @@ If you need flags, run `python3 scripts/opencode_manager.py <subcommand> --help`
 - Need to see watcher bindings -> `list-watchers`
 - Need to stop monitoring only -> `stop-watcher` (only when the user explicitly asks to stop the watcher)
 - Need to remove the OpenClaw binding -> `detach` (only when the user explicitly asks to detach / stop monitoring)
+
+Prompt-text boundary for `continue` (critical):
+
+- Put only task instructions for OpenCode in the follow-up prompt body.
+- Do **not** include orchestration meta lines in prompt text, such as:
+  - `Continue in the SAME OpenCode session`
+  - `Session: ...`
+  - `Workspace: ...`
+  - watcher/openclaw routing identifiers
+- Session/workspace routing belongs to manager args (`--opencode-session-id`, `--opencode-workspace`, `--openclaw-session-key`), not the prompt body.
+- If a handoff draft already contains those meta headers, strip them before sending the follow-up prompt unless the user explicitly asks for literal forwarding.
+
+When you must start a new session, include a full context bootstrap prompt (not a short handoff), written as if the receiver is a newcomer with zero prior context:
+- objective and current phase,
+- what is already done vs not done,
+- key constraints / non-goals,
+- exact files/paths to use,
+- concrete output format expected,
+- known pitfalls from prior attempts.
+
+Do not assume a new OpenCode session knows prior discussion history.
 
 Hard rule: if you want OpenCode to stop, use `stop-session`. Do not send a natural-language follow-up prompt like “please stop”, “pause here”, or “hold off for now” and assume that means the run is really stopped. Use the actual stop command / abort API.
 
@@ -94,7 +116,37 @@ Hot-path interpretation:
 
 This is the main anti-sprawl rule: prefer the manager contract over repeated hand-written polling guidance.
 
-### 6) Do not become a second watcher
+### 6) Drive tasks to completion when scope is already agreed
+
+When the user has already asked for end-to-end completion of an OpenCode task:
+
+- Keep driving the same OpenCode session forward until the requested outcome is actually done.
+- Do not stop at intermediate status/report checkpoints just to ask for another confirmation.
+- Give concise progress updates, but continue execution by default.
+- Pause for user confirmation only when a new blocker materially deviates from the agreed direction/scope (for example: scope change, ambiguous trade-off, risky/destructive action outside prior agreement).
+
+### 7) Permission blocking: approve first, do not chat-loop
+
+When `inspect` shows `blocked` with `pendingPermissionCount > 0` and prompts are `session_match` for the active task:
+
+- Approve immediately (default `response:"once"`) for all pending permission prompts in that pass.
+- Do not send a follow-up prompt like “please continue” just to recover from permission blocking.
+- After approval, let the existing turn continue naturally; only intervene again if a new blocker appears.
+
+Use this API shape when needed:
+
+```bash
+POST /session/{sessionID}/permissions/{permissionID}
+{"response":"once"}
+```
+
+Escalate to the user only when:
+
+- prompt scope is mismatched/unscoped and may be unsafe,
+- the blocker is an open question (`openQuestionCount > 0`) requiring a decision,
+- or approval repeatedly fails.
+
+### 8) Do not become a second watcher
 
 `inspect` is for one-off understanding, not for waiting loops.
 Allowed cases are narrow:
@@ -107,7 +159,7 @@ Allowed cases are narrow:
 Once a live watcher handoff is active, do **not** run `sleep + inspect`, repeated `inspect`, or “just one more inspect” completion checks.
 No second watcher. No inspect loop.
 
-### 7) Runtime updates are signals, not chat replies
+### 9) Runtime updates are signals, not chat replies
 
 Watcher-delivered runtime updates are internal progress inputs for the main OpenClaw agent.
 The user does **not** see the injected payload.
@@ -115,14 +167,19 @@ Do not echo raw `systemEvent`, JSON, headers, tags, or watcher wording.
 
 Use this rule set:
 
+- Prioritize direct user messages/questions over runtime-signal handling. Runtime-signal suppression must never suppress a pending user-facing answer.
 - Read `runtimeSignal` before anything else.
 - Treat `runtimeSignal` as a wake/inspect token, not as a state summary; the live state comes from `inspect`, `attach` rehydration, and targeted drill-down only when needed.
 - If `runtimeSignal.action=inspect_once_current_state`, do **one** `python3 scripts/opencode_manager.py inspect ...` for that `opencodeSessionId`, then speak from the inspected current state.
 - If that inspect still leaves a real gap, first do **one narrow** `inspect --expand-index <n>` lookup (pick the timeline item that matches the question).
 - Use `inspect-history` only as fallback for older/broader lookup that `--expand-index` cannot cover (including “what happened between inspect points?” when older context is outside the compact timeline window).
 - After that one inspect (plus at most one narrow drill-down), do **not** keep polling unless the user explicitly asks or you are diagnosing watcher/runtime issues.
-- For one task cluster, prefer at most **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
-- Same-state / repeated `completed` / low-value updates should usually stay silent.
+- Define a **task cycle** from one explicit user instruction to the next; any new user instruction starts a new cycle.
+- For one task cycle, prefer at most **one progress update while work is moving** and **one final completion/status update** when the outcome is clear.
+- Suppress repeated updates only when they are in the **same task cycle** and show **no meaningful output/progress change** (no new artifact, no new evidence, no state advance).
+- If the user explicitly asks to "continue" or run "end-to-end", always surface visible **start/progress/done** updates for that cycle (do not suppress these checkpoints as duplicate noise).
+- Never suppress the **first `completed` signal of a new task cycle**.
+- Same-state / low-value repeats after those rules are satisfied should usually stay silent.
 
 When a visible reply is needed, order it like this:
 
@@ -130,7 +187,7 @@ When a visible reply is needed, order it like this:
 2. what evidence was seen
 3. what that means for the user/task
 
-### 8) Noise handling
+### 10) Noise handling
 
 `ignored=true` plugin events may appear in raw ledgers. Treat them as debug noise unless another meaningful signal confirms they matter.
 Prefer this reading order:
